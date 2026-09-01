@@ -1,0 +1,24 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments & Virtual Environments
+.env
+.venv/
+venv/
+env/
+ENV/
+
+# Scratch & Sandbox Directories
+scratch/repos/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# macOS System Files
+.DS_Store
+.AppleDouble
+.LSOverride
