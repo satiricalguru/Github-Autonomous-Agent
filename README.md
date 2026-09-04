@@ -12,7 +12,7 @@
 ### High-Performance Multi-Task AI Agent for Continuous Inbox Triage, Open-Source Issue Hunting & Verified PR Resolution
 
 [![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.14-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
-[![AI Engine](https://img.shields.io/badge/Model-Gemini%203.8%20%7C%203.7%20Flash-8E75B2?style=for-the-badge&logo=google&logoColor=white)](https://deepmind.google/technologies/gemini/)
+[![AI Engine](https://img.shields.io/badge/Models-Gemini%20%7C%20Claude%20%7C%20GPT--OSS-8E75B2?style=for-the-badge&logo=google&logoColor=white)](https://deepmind.google/technologies/gemini/)
 [![Framework](https://img.shields.io/badge/Engine-Google%20Antigravity-4285F4?style=for-the-badge&logo=google&logoColor=white)](https://antigravity.google)
 [![Architecture](https://img.shields.io/badge/Transport-AsyncIO%20%2B%20GH%20CLI%20Bridge-000000?style=for-the-badge&logo=github&logoColor=white)](https://cli.github.com)
 [![Safety Protocol](https://img.shields.io/badge/Compliance-Anti--Spam%20Guardrails-10B981?style=for-the-badge&logo=shield&logoColor=white)](#-strict-compliance--anti-spam-guardrails)
@@ -20,6 +20,7 @@
 <br/>
 
 [✨ Features](#-core-capabilities) •
+[🤖 Models](#-multi-model-intelligence) •
 [🖥️ Live Dashboard](#-live-web-telemetry-dashboard) •
 [🚀 Quick Start](#-quick-start) •
 [⚙️ Configuration](#️-configuration-matrix) •
@@ -81,6 +82,21 @@ It operates continuously in the background across two concurrent execution loops
   - 📊 **Reports**: PR velocity charts, triage acceptance rates, and model latency metrics.
   - ⚙️ **Settings**: Live configuration editor for models, intervals, and modes.
   - 📄 **Logs**: Live streaming terminal window.
+
+### 4. 🤖 Multi-Model Intelligence & IDE Synchronization
+- **Universal Model Compatibility**: Any model chosen in the Google Antigravity IDE dropdown (*Gemini 3.8 Flash, Gemini 3.7 Flash, Gemini 3.6 Flash, Gemini 3.1 Pro, Claude Sonnet 4.6, Claude Opus 4.6, GPT-OSS 120B*) directly drives the autonomous agent workflows.
+- **Dynamic Session Sync**: Automatically inspects the active Antigravity session transcript to mirror your model choice without requiring manual config edits.
+- **Resilient Fallbacks**: Deterministic AST and rule-based heuristics ensure continuous operation even in offline or API-constrained environments.
+
+| Antigravity IDE Dropdown Model | Model Identifier | Live Dashboard Display Label |
+| :--- | :--- | :--- |
+| **Gemini 3.8 Flash High** | `gemini-3.8-flash` | `Gemini 3.8 Flash (High Reasoning)` |
+| **Gemini 3.7 Flash Medium** | `gemini-3.7-flash` | `Gemini 3.7 Flash (High Reasoning)` |
+| **Gemini 3.6 Flash Medium** | `gemini-3.6-flash` | `Gemini 3.6 Flash` |
+| **Gemini 3.1 Pro Low** | `gemini-3.1-pro` | `Gemini 3.1 Pro` |
+| **Claude Sonnet 4.6 (Thinking)** | `claude-sonnet-4.6` | `Claude Sonnet 4.6 (Thinking)` |
+| **Claude Opus 4.6 (Thinking)** | `claude-opus-4.6` | `Claude Opus 4.6 (Thinking)` |
+| **GPT-OSS 120B (Medium)** | `gpt-oss-120b` | `GPT-OSS 120B (Medium)` |
 
 ---
 
@@ -170,7 +186,7 @@ Copy `.env.example` to `.env` to customize agent behavior:
 | Variable | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `GEMINI_API_KEY` | `string` | `""` | Google Gemini API key for deep code analysis. |
-| `MODEL_NAME` | `string` | `gemini-3.8-flash` | Active AI reasoning model tier (e.g. `gemini-3.8-flash`, `gemini-3.7-flash`). |
+| `MODEL_NAME` | `string` | `gemini-3.8-flash` | Active reasoning model tier (`gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.1-pro`, `claude-sonnet-4.6`, `claude-opus-4.6`, `gpt-oss-120b`). |
 | `DRY_RUN` | `boolean` | `true` | When `true`, simulates writes without posting live. |
 | `GITHUB_TOKEN` | `string` | `""` | Personal Access Token (auto-resolved from `gh auth` if empty). |
 | `INBOX_POLL_INTERVAL` | `integer` | `60` | Seconds between inbox notification checks. |
