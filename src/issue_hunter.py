@@ -41,7 +41,8 @@ class IssueHunter:
 
         for lang in self.config.target_languages:
             for label in self.config.target_labels:
-                query = f"state:open no:assignee language:{lang} label:\"{label}\""
+                stars_clause = f"stars:>={self.config.min_repo_stars} " if self.config.min_repo_stars > 0 else ""
+                query = f"state:open no:assignee language:{lang} {stars_clause}label:\"{label}\""
                 status_tracker.update_hunter("HUNTING", f"Searching {lang.upper()} issues (label: {label})...", current_query=query)
                 logger.info(f"Searching issues: {query}")
                 items = await self.client.search_issues(query=query, sort="updated", order="desc", per_page=10)
@@ -78,6 +79,7 @@ class IssueHunter:
                                 "issue_number": item.get("number"),
                                 "repo": owner_repo,
                                 "title": title,
+                                "language": lang,
                                 "url": html_url,
                                 "body": body,
                                 "labels": labels,

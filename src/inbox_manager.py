@@ -100,15 +100,15 @@ class InboxManager:
                 sanitized_reply = self.safety.sanitize_comment(reply_text)
                 is_safe, reason_msg = self.safety.validate_content_safety(sanitized_reply)
 
-                if is_safe:
-                    owner, repo = repo_name.split("/")
+                if is_safe and "/" in repo_name:
+                    owner, repo = repo_name.split("/", 1)
                     logger.info(f"Replying to {repo_name}#{issue_number}: {sanitized_reply}")
                     post_res = await self.client.post_issue_comment(
                         owner=owner, repo=repo, issue_number=issue_number, body=sanitized_reply
                     )
                     if post_res:
                         action_taken = "replied"
-                else:
+                elif not is_safe:
                     logger.warning(f"Reply rejected by safety guardrail: {reason_msg}")
 
             task_id = task_tracker.create_task(
@@ -119,8 +119,12 @@ class InboxManager:
                 details={"reason": reason, "subject_type": subject_type},
             )
 
-            # Mark as read and handled
+            # Mark as read, done (archived from inbox), and handled
             await self.client.mark_notification_read(thread_id)
+            if hasattr(self.client, "mark_notification_done"):
+                done_coro = self.client.mark_notification_done(thread_id)
+                if hasattr(done_coro, "__await__"):
+                    await done_coro
             self.safety.state.mark_notification_handled(thread_id)
             status_tracker.log_event("INBOX", f"{action_taken.title()} on [{repo_name}] {subject_title[:40]}")
             task_tracker.complete_task(
@@ -128,6 +132,17 @@ class InboxManager:
                 status="COMPLETED",
                 outcome=f"{action_taken.title()}: {evaluation.get('rationale', 'Evaluated with AI')}",
                 details_update={"evaluation": evaluation, "action_taken": action_taken},
+            )
+
+            results.append(
+                {
+                    "thread_id": thread_id,
+                    "repo": repo_name,
+                    "title": subject_title,
+                    "reason": reason,
+                    "action": action_taken,
+                    "evaluation": evaluation,
+                }
             )
 
         status_tracker.update_inbox("IDLE", "Inbox triage completed", handled_count=len(self.safety.state.handled_notifications))

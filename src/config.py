@@ -48,15 +48,75 @@ def get_gh_cli_username() -> Optional[str]:
         return None
 
 
+def detect_active_ai_model() -> str:
+    """Detects active AI model from environment or Antigravity IDE session."""
+    env_model = os.getenv("GEMINI_MODEL") or os.getenv("MODEL_NAME")
+    if env_model:
+        return env_model
+
+    conv_id = os.getenv("ANTIGRAVITY_CONVERSATION_ID")
+    if conv_id:
+        transcript = (
+            Path.home()
+            / ".gemini"
+            / "antigravity-ide"
+            / "brain"
+            / conv_id
+            / ".system_generated"
+            / "logs"
+            / "transcript.jsonl"
+        )
+        if transcript.exists():
+            try:
+                import re
+
+                with open(transcript, "r", encoding="utf-8") as f:
+                    for line in f:
+                        m = re.search(
+                            r"Model Selection\` from \S+ to (.+?)\.\s*No need", line
+                        )
+                        if m:
+                            raw = m.group(1).strip()
+                            if "3.8" in raw:
+                                return "gemini-3.8-flash"
+                            elif "3.7" in raw:
+                                return "gemini-3.7-flash"
+                            elif "2.5" in raw and "pro" in raw.lower():
+                                return "gemini-2.5-pro"
+                            elif "2.5" in raw:
+                                return "gemini-2.5-flash"
+                            return raw.lower().replace(" ", "-")
+            except Exception:
+                pass
+    return "gemini-3.8-flash"
+
+
 class AgentConfig(BaseModel):
     """Configuration settings for the GitHub Agent."""
 
     gemini_api_key: Optional[str] = Field(
         default_factory=lambda: os.getenv("GEMINI_API_KEY")
     )
-    model_name: str = Field(
-        default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
-    )
+    model_name: str = Field(default_factory=detect_active_ai_model)
+
+    @property
+    def model_display_name(self) -> str:
+        name = self.model_name.lower()
+        if "3.8" in name:
+            return "Gemini 3.8 Flash (High Reasoning)"
+        elif "3.7" in name:
+            return "Gemini 3.7 Flash (High Reasoning)"
+        elif "2.5" in name and "pro" in name:
+            return "Gemini 2.5 Pro"
+        elif "2.5" in name:
+            return "Gemini 2.5 Flash"
+        return self.model_name.upper()
+
+    def update(self, **kwargs):
+        """Update runtime configuration fields safely."""
+        for key, value in kwargs.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
     github_token: Optional[str] = Field(
         default_factory=lambda: os.getenv("GITHUB_TOKEN") or get_gh_cli_token()
     )

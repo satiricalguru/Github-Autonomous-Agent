@@ -13,8 +13,10 @@ from rich.text import Text
 
 try:
     from .config import AgentConfig, config
+    from .safety_guardrails import atomic_write_json
 except ImportError:
     from config import AgentConfig, config
+    from safety_guardrails import atomic_write_json
 
 logger = logging.getLogger("github_agent.status")
 
@@ -65,10 +67,8 @@ class StatusTracker:
     def save(self):
         """Persist status snapshot to disk."""
         try:
-            self.status_file.parent.mkdir(parents=True, exist_ok=True)
             snapshot = self.get_snapshot()
-            with open(self.status_file, "w", encoding="utf-8") as f:
-                json.dump(snapshot, f, indent=2)
+            atomic_write_json(self.status_file, snapshot)
         except Exception as e:
             logger.warning(f"Failed to persist agent status: {e}")
 
@@ -125,14 +125,23 @@ class StatusTracker:
         """Return structured status snapshot."""
         return {
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "active_model": self.active_model,
+            "active_model": self.config.model_name,
+            "model_display_name": self.config.model_display_name,
             "ai_mode": self.ai_mode,
             "overall_status": self.overall_status,
             "operating_mode": "DRY-RUN (Safe Simulation)" if self.config.dry_run else "LIVE (Real Submissions)",
+            "dry_run": self.config.dry_run,
+            "inbox_poll_interval": self.config.inbox_poll_interval,
+            "issue_hunt_interval": self.config.issue_hunt_interval,
+            "target_languages": self.config.target_languages,
+            "target_labels": self.config.target_labels,
+            "max_prs_per_day": self.config.max_prs_per_day,
             "github_user": self.config.github_username or "Authenticated User",
             "inbox_worker": self.inbox_status,
             "hunter_worker": self.hunter_status,
             "recent_events": self.recent_events[:10],
+            "rate_limit_remaining": 5000,
+            "rate_limit_limit": 5000,
         }
 
     def render_dashboard(self) -> Panel:

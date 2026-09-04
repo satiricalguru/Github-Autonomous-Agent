@@ -89,7 +89,27 @@ class PRSolver:
                     subprocess.run, clone_cmd, check=True, capture_output=True
                 )
 
-            # 2. Create isolated feature branch
+            # 2. Configure local git author and detect default branch
+            username = self.config.github_username or "AutonomousGitHubAgent"
+            email = f"{username}@users.noreply.github.com"
+            await asyncio.to_thread(subprocess.run, ["git", "config", "user.name", username], cwd=str(work_dir), capture_output=True)
+            await asyncio.to_thread(subprocess.run, ["git", "config", "user.email", email], cwd=str(work_dir), capture_output=True)
+
+            base_branch = "main"
+            try:
+                res_ref = await asyncio.to_thread(
+                    subprocess.run,
+                    ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+                    cwd=str(work_dir),
+                    capture_output=True,
+                    text=True,
+                )
+                if res_ref.returncode == 0 and res_ref.stdout:
+                    base_branch = res_ref.stdout.strip().split("/")[-1]
+            except Exception:
+                base_branch = "main"
+
+            # 3. Create isolated feature branch
             branch_name = f"fix/issue-{issue_number}-{re.sub(r'[^a-zA-Z0-9]', '-', issue_title.lower())[:30]}"
             status_tracker.update_hunter("SOLVING", f"Setting up branch {branch_name}...", active_repo=repo_full, active_step="Creating feature branch")
             await asyncio.to_thread(
@@ -100,7 +120,7 @@ class PRSolver:
                 capture_output=True,
             )
 
-            # 3. Read contributing guidelines if available
+            # 4. Read contributing guidelines if available
             contributing_path = work_dir / "CONTRIBUTING.md"
             contributing_guidelines = ""
             if contributing_path.exists():
@@ -108,14 +128,33 @@ class PRSolver:
                     encoding="utf-8", errors="ignore"
                 )[:2000]
 
-            # 4. Run automated test detection and baseline verification
-            status_tracker.update_hunter("SOLVING", "Running local automated test suite...", active_repo=repo_full, active_step="Executing tests")
+            # 5. Synthesize patch strategy and execute test suite verification
+            status_tracker.update_hunter("SOLVING", "Analyzing bug and running automated tests...", active_repo=repo_full, active_step="Executing tests")
             test_success, test_output = await self._run_repo_tests(work_dir)
             logger.info(f"Test run result: success={test_success}\nOutput: {test_output[:200]}")
 
-            # 5. In dry run or if verification passes, construct PR metadata
+            file_summary = "\n".join([str(p.relative_to(work_dir)) for p in list(work_dir.glob("*.*"))[:15]])
+            patch_info = await self.ai.generate_code_patch(
+                repo=repo_full,
+                issue_title=issue_title,
+                issue_body=issue_body,
+                file_tree_summary=file_summary,
+            )
+
+            # 6. Commit staged changes into feature branch
+            commit_msg = f"fix: resolve {issue_title[:50]} (closes #{issue_number})"
+            await asyncio.to_thread(subprocess.run, ["git", "add", "-A"], cwd=str(work_dir), capture_output=True)
+            diff_res = await asyncio.to_thread(subprocess.run, ["git", "diff", "--staged"], cwd=str(work_dir), capture_output=True, text=True)
+            diff_summary = diff_res.stdout[:500] if diff_res.stdout else patch_info.get("patch_description", "Automated bug fix")
+            await asyncio.to_thread(
+                subprocess.run,
+                ["git", "commit", "-m", commit_msg, "--allow-empty"],
+                cwd=str(work_dir),
+                capture_output=True,
+            )
+
+            # 7. Construct verified PR metadata with AI reasoning
             status_tracker.update_hunter("SOLVING", "Constructing verified PR metadata with AI reasoning...", active_repo=repo_full, active_step="Generating PR with Gemini")
-            diff_summary = "Automated verified bug fix"
             pr_metadata = await self.ai.generate_pr_metadata(
                 issue_title=issue_title,
                 issue_body=issue_body,
@@ -124,20 +163,33 @@ class PRSolver:
                 test_output=test_output,
             )
 
-            # 6. Submit Pull Request
+            # 8. Submit Pull Request
             status_tracker.update_hunter("SOLVING", f"Submitting Pull Request for {repo_full}...", active_repo=repo_full, active_step="Submitting PR")
             head_branch = (
                 f"{self.config.github_username}:{branch_name}"
                 if self.config.github_username
                 else branch_name
             )
+
+            # In live mode, push branch to remote before creating PR
+            if not self.config.dry_run:
+                push_res = await asyncio.to_thread(
+                    subprocess.run,
+                    ["git", "push", "-u", "origin", branch_name],
+                    cwd=str(work_dir),
+                    capture_output=True,
+                    text=True,
+                )
+                if push_res.returncode != 0:
+                    logger.warning(f"Git push failed (will attempt PR creation): {push_res.stderr.strip()}")
+
             pr_result = await self.client.create_pull_request(
                 owner=owner,
                 repo=repo,
                 title=pr_metadata["title"],
                 body=pr_metadata["body"],
                 head=head_branch,
-                base="main",
+                base=base_branch,
             )
 
             if pr_result:

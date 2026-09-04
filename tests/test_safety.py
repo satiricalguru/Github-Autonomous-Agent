@@ -6,12 +6,9 @@ from pathlib import Path
 # Add project root to sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-try:
-    from src.config import AgentConfig
-    from src.safety_guardrails import SafetyGuardrails, StateStore
-except ImportError:
-    from config import AgentConfig
-    from safety_guardrails import SafetyGuardrails, StateStore
+from src.config import AgentConfig
+from src.safety_guardrails import SafetyGuardrails, StateStore
+
 
 
 class TestSafetyGuardrails(unittest.TestCase):

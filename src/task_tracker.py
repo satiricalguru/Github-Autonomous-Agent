@@ -3,6 +3,7 @@
 import json
 import logging
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -12,8 +13,10 @@ from rich.table import Table
 
 try:
     from .config import AgentConfig, config
+    from .safety_guardrails import atomic_write_json
 except ImportError:
     from config import AgentConfig, config
+    from safety_guardrails import atomic_write_json
 
 logger = logging.getLogger("github_agent.tasks")
 console = Console()
@@ -33,15 +36,15 @@ class TaskTracker:
             return
         try:
             with open(self.tasks_file, "r", encoding="utf-8") as f:
-                self.tasks = json.load(f)
-        except Exception:
-            self.tasks = []
+                loaded = json.load(f)
+                if isinstance(loaded, list):
+                    self.tasks = loaded
+        except Exception as e:
+            logger.debug(f"Transient read failure on {self.tasks_file}: {e}")
 
     def save(self):
         try:
-            self.tasks_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.tasks_file, "w", encoding="utf-8") as f:
-                json.dump(self.tasks, f, indent=2)
+            atomic_write_json(self.tasks_file, self.tasks)
         except Exception as e:
             logger.warning(f"Failed to save tasks history: {e}")
 
@@ -54,7 +57,7 @@ class TaskTracker:
         details: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Register a new task in progress."""
-        task_id = f"TASK-{int(time.time() * 1000) % 100000:05d}"
+        task_id = f"TASK-{int(time.time()):06d}-{uuid.uuid4().hex[:4].upper()}"
         task_obj = {
             "id": task_id,
             "category": category,

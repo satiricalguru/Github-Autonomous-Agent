@@ -5,7 +5,7 @@ import json
 import logging
 import shutil
 import subprocess
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 try:
@@ -53,6 +53,28 @@ class GitHubClient:
             await self._client.aclose()
             self._client = None
 
+    async def _run_command(
+        self, cmd: List[str], input_data: Optional[str] = None, timeout: float = 20.0
+    ) -> Optional[Tuple[int, str, str]]:
+        """Execute an external CLI command asynchronously using native asyncio subprocess."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE if input_data else None,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(input=input_data.encode("utf-8") if input_data else None),
+                timeout=timeout,
+            )
+            stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+            stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+            return (proc.returncode if proc.returncode is not None else 0), stdout, stderr
+        except Exception as e:
+            logger.warning(f"Command execution failed ({cmd[0] if cmd else ''}): {e}")
+            return None
+
     async def _run_gh_api(
         self, endpoint: str, method: str = "GET", body: Optional[Dict[str, Any]] = None
     ) -> Optional[Any]:
@@ -66,24 +88,16 @@ class GitHubClient:
 
         input_data = json.dumps(body) if body else None
 
-        try:
-            res = await asyncio.to_thread(
-                subprocess.run,
-                cmd,
-                input=input_data,
-                text=True,
-                capture_output=True,
-                timeout=20,
-            )
-            if res.returncode == 0 and res.stdout:
+        res = await self._run_command(cmd, input_data=input_data, timeout=20.0)
+        if res is not None:
+            returncode, stdout, stderr = res
+            if returncode == 0 and stdout:
                 try:
-                    return json.loads(res.stdout)
+                    return json.loads(stdout)
                 except Exception:
-                    return res.stdout.strip()
-            elif res.returncode != 0:
-                logger.warning(f"gh api error on {endpoint}: {res.stderr.strip()}")
-        except Exception as e:
-            logger.warning(f"gh api execution failed on {endpoint}: {e}")
+                    return stdout.strip()
+            elif returncode != 0:
+                logger.warning(f"gh api error on {endpoint}: {stderr.strip()}")
         return None
 
     async def _request(
@@ -159,6 +173,19 @@ class GitHubClient:
         res = await self._request("PATCH", f"/notifications/threads/{thread_id}")
         return res.status_code in (200, 202, 205)
 
+    async def mark_notification_done(self, thread_id: str) -> bool:
+        """Mark a notification thread as done (archive from inbox via DELETE)."""
+        if self.config.dry_run:
+            logger.info(f"[DRY-RUN] Mark notification {thread_id} as done.")
+            return True
+
+        if self._has_gh:
+            await self._run_gh_api(f"/notifications/threads/{thread_id}", method="DELETE")
+            return True
+
+        res = await self._request("DELETE", f"/notifications/threads/{thread_id}")
+        return res.status_code in (200, 202, 204, 205)
+
     async def get_resource_by_url(self, url: str) -> Optional[Dict[str, Any]]:
         """Fetch resource by API URL or endpoint."""
         endpoint = url.replace("https://api.github.com", "") if url.startswith("https://api.github.com") else url
@@ -221,34 +248,30 @@ class GitHubClient:
                 "--json",
                 "number,title,url,repository,labels,body,state,assignees",
             ]
-            try:
-                res = await asyncio.to_thread(
-                    subprocess.run,
-                    cmd,
-                    text=True,
-                    capture_output=True,
-                    timeout=20,
-                )
-                if res.returncode == 0 and res.stdout:
-                    items = json.loads(res.stdout)
-                    # Normalize fields for compatibility
-                    formatted = []
-                    for it in items:
-                        repo_info = it.get("repository", {})
-                        repo_name = repo_info.get("nameWithOwner") or repo_info.get("name", "")
-                        formatted.append({
-                            "number": it.get("number"),
-                            "title": it.get("title", ""),
-                            "html_url": it.get("url", ""),
-                            "body": it.get("body", ""),
-                            "labels": it.get("labels", []),
-                            "repository_url": f"https://api.github.com/repos/{repo_name}",
-                            "assignees": it.get("assignees", []),
-                            "state": it.get("state", "open"),
-                        })
-                    return formatted
-            except Exception as e:
-                logger.warning(f"gh search issues failed: {e}")
+            res = await self._run_command(cmd, timeout=20.0)
+            if res is not None:
+                returncode, stdout, stderr = res
+                if returncode == 0 and stdout:
+                    try:
+                        items = json.loads(stdout)
+                        # Normalize fields for compatibility
+                        formatted = []
+                        for it in items:
+                            repo_info = it.get("repository", {})
+                            repo_name = repo_info.get("nameWithOwner") or repo_info.get("name", "")
+                            formatted.append({
+                                "number": it.get("number"),
+                                "title": it.get("title", ""),
+                                "html_url": it.get("url", ""),
+                                "body": it.get("body", ""),
+                                "labels": it.get("labels", []),
+                                "repository_url": f"https://api.github.com/repos/{repo_name}",
+                                "assignees": it.get("assignees", []),
+                                "state": it.get("state", "open"),
+                            })
+                        return formatted
+                    except Exception as e:
+                        logger.warning(f"gh search issues parse error: {e}")
 
         res = await self._request("GET", "/search/issues", params={"q": query, "sort": sort, "order": order, "per_page": per_page})
         if res.status_code == 200:

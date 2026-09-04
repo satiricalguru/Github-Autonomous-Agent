@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -28,6 +29,23 @@ AI_SPAM_SIGNATURES = [
 ]
 
 
+def atomic_write_json(file_path: Path, data: Any):
+    """Atomically writes JSON data to disk using a temporary file and atomic replace."""
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_file = file_path.with_name(f"{file_path.name}.tmp.{int(time.time() * 1000)}")
+    try:
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(temp_file, file_path)
+    except Exception:
+        if temp_file.exists():
+            try:
+                temp_file.unlink()
+            except Exception:
+                pass
+        raise
+
+
 class StateStore:
     """Persistent state manager to avoid duplicates and track activity."""
 
@@ -52,18 +70,15 @@ class StateStore:
 
     def save(self):
         try:
-            self.state_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.state_file, "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "handled_notifications": list(self.handled_notifications),
-                        "handled_issues": list(self.handled_issues),
-                        "submitted_prs": self.submitted_prs,
-                        "last_updated": datetime.now(timezone.utc).isoformat(),
-                    },
-                    f,
-                    indent=2,
-                )
+            atomic_write_json(
+                self.state_file,
+                {
+                    "handled_notifications": list(self.handled_notifications),
+                    "handled_issues": list(self.handled_issues),
+                    "submitted_prs": self.submitted_prs,
+                    "last_updated": datetime.now(timezone.utc).isoformat(),
+                },
+            )
         except Exception as e:
             logger.error(f"Failed to save state file {self.state_file}: {e}")
 

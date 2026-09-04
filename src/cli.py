@@ -127,12 +127,41 @@ async def cmd_hunt(limit: int = 5):
                 iss["repo"],
                 str(iss["issue_number"]),
                 iss["title"][:50],
-                iss["language"],
+                iss.get("language", "N/A"),
                 f"{iss['score']:.2f}",
                 iss["url"],
             )
 
         console.print(table)
+
+
+async def cmd_solve(auto: bool = True, limit: int = 1, dry_run: Optional[bool] = None):
+    """Find actionable top-tier issues and attempt verified solution."""
+    if dry_run is not None:
+        config.dry_run = dry_run
+    console.print(f"[bold cyan]Hunting and solving top-tier issues (auto={auto}, limit={limit}, mode={'DRY-RUN' if config.dry_run else 'LIVE'})...[/bold cyan]")
+    async with GitHubClient(config) as client:
+        hunter = IssueHunter(client=client, agent_config=config)
+        solver = PRSolver(client=client, agent_config=config)
+        candidates = await hunter.hunt_issues(limit=limit)
+        if not candidates:
+            console.print("[yellow]No actionable issues discovered matching search criteria.[/yellow]")
+            return
+        for c in candidates:
+            console.print(f"[cyan]Attempting fix for {c['repo']}#{c['issue_number']}: {c['title']}[/cyan]")
+            res = await solver.solve_issue(c)
+            if res:
+                console.print(f"[bold green]✓ PR Processed:[/bold green] {res['pr_url']} (Dry Run: {res.get('dry_run', False)})")
+            else:
+                console.print(f"[yellow]Could not complete fix for {c['repo']}#{c['issue_number']}[/yellow]")
+
+
+def cmd_stop():
+    """Stop background agent execution."""
+    status_tracker.overall_status = "STOPPED"
+    status_tracker.log_event("SYSTEM", "Agent stopped via CLI command")
+    status_tracker.save()
+    console.print("[bold yellow]✓ Signaled Autonomous GitHub Agent to stop.[/bold yellow]")
 
 
 async def cmd_start(dry_run: Optional[bool] = None):
@@ -182,6 +211,15 @@ def main():
     hunt_parser = subparsers.add_parser("hunt", help="Search top-tier repos for open issues")
     hunt_parser.add_argument("--limit", type=int, default=5, help="Number of issues to return")
 
+    # Solve command
+    solve_parser = subparsers.add_parser("solve", help="Hunt and autonomously solve issues")
+    solve_parser.add_argument("--auto", action="store_true", default=True, help="Autonomously solve issues without prompting")
+    solve_parser.add_argument("--limit", type=int, default=1, help="Number of issues to solve")
+    solve_parser.add_argument("--dry-run", action="store_true", help="Simulate PR creation only")
+
+    # Stop command
+    subparsers.add_parser("stop", help="Signal autonomous agent to stop")
+
     args = parser.parse_args()
     setup_logging(args.verbose)
 
@@ -195,6 +233,10 @@ def main():
         asyncio.run(cmd_inbox(dry_run=args.dry_run if args.dry_run else None))
     elif args.command == "hunt":
         asyncio.run(cmd_hunt(limit=args.limit))
+    elif args.command == "solve":
+        asyncio.run(cmd_solve(auto=args.auto, limit=args.limit, dry_run=args.dry_run if args.dry_run else None))
+    elif args.command == "stop":
+        cmd_stop()
     elif args.command == "start" or args.command is None:
         dry_run = True if getattr(args, "dry_run", False) else (False if getattr(args, "live", False) else None)
         asyncio.run(cmd_start(dry_run=dry_run))

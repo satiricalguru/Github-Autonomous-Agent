@@ -1,5 +1,10 @@
 <div align="center">
 
+<a href="https://github.com/satiricalguru/Github-Agent" target="_blank" rel="noopener noreferrer">
+  <img src="https://api.iconify.design/simple-icons:github.svg?color=%23181717#gh-light-mode-only" width="72" height="72" alt="GitHub Logo" />
+  <img src="https://api.iconify.design/simple-icons:github.svg?color=%23ffffff#gh-dark-mode-only" width="72" height="72" alt="GitHub Logo" />
+</a>
+
 # 🤖 Autonomous GitHub Agent
 ### High-Performance Multi-Task AI Agent for Continuous Inbox Triage, Open-Source Issue Hunting & Verified PR Resolution
 

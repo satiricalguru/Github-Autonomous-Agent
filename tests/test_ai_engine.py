@@ -5,12 +5,9 @@ from pathlib import Path
 # Add project root to sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-try:
-    from src.ai_engine import AIEngine
-    from src.config import AgentConfig
-except ImportError:
-    from ai_engine import AIEngine
-    from config import AgentConfig
+from src.ai_engine import AIEngine
+from src.config import AgentConfig
+
 
 
 class TestAIEngine(unittest.IsolatedAsyncioTestCase):

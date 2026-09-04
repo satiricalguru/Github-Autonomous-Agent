@@ -5,10 +5,8 @@ from pathlib import Path
 # Add project root to sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-try:
-    from src.config import AgentConfig
-except ImportError:
-    from config import AgentConfig
+from src.config import AgentConfig
+
 
 
 class TestConfig(unittest.TestCase):
