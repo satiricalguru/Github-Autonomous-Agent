@@ -12,7 +12,7 @@
 ### High-Performance Multi-Task AI Agent for Continuous Inbox Triage, Open-Source Issue Hunting & Verified PR Resolution
 
 [![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.14-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
-[![AI Engine](https://img.shields.io/badge/Model-Gemini%203.7%20Flash-8E75B2?style=for-the-badge&logo=google&logoColor=white)](https://deepmind.google/technologies/gemini/)
+[![AI Engine](https://img.shields.io/badge/Model-Gemini%203.8%20%7C%203.7%20Flash-8E75B2?style=for-the-badge&logo=google&logoColor=white)](https://deepmind.google/technologies/gemini/)
 [![Framework](https://img.shields.io/badge/Engine-Google%20Antigravity-4285F4?style=for-the-badge&logo=google&logoColor=white)](https://antigravity.google)
 [![Architecture](https://img.shields.io/badge/Transport-AsyncIO%20%2B%20GH%20CLI%20Bridge-000000?style=for-the-badge&logo=github&logoColor=white)](https://cli.github.com)
 [![Safety Protocol](https://img.shields.io/badge/Compliance-Anti--Spam%20Guardrails-10B981?style=for-the-badge&logo=shield&logoColor=white)](#-strict-compliance--anti-spam-guardrails)
@@ -149,6 +149,12 @@ cd Github-Agent
 
 # Search top-tier repos for actionable issues
 ./run.sh hunt --limit 5
+
+# Autonomously hunt, fix, test, and draft PR
+./run.sh solve --limit 1 --dry-run
+
+# Launch live web telemetry dashboard (http://localhost:3000)
+./run.sh web
 ```
 
 ---
@@ -160,7 +166,7 @@ Copy `.env.example` to `.env` to customize agent behavior:
 | Variable | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `GEMINI_API_KEY` | `string` | `""` | Google Gemini API key for deep code analysis. |
-| `MODEL_NAME` | `string` | `gemini-3.7-flash` | Active AI reasoning model tier. |
+| `MODEL_NAME` | `string` | `gemini-3.8-flash` | Active AI reasoning model tier (e.g. `gemini-3.8-flash`, `gemini-3.7-flash`). |
 | `DRY_RUN` | `boolean` | `true` | When `true`, simulates writes without posting live. |
 | `GITHUB_TOKEN` | `string` | `""` | Personal Access Token (auto-resolved from `gh auth` if empty). |
 | `INBOX_POLL_INTERVAL` | `integer` | `60` | Seconds between inbox notification checks. |
@@ -193,7 +199,7 @@ flowchart TD
     end
 
     subgraph Intelligence["AI & Safety Engine"]
-        AI["src/ai_engine.py\n(Gemini 3.7 Flash Reasoning)"]
+        AI["src/ai_engine.py\n(Gemini 3.8 / 3.7 Flash Reasoning)"]
         Safety["src/safety_guardrails.py\n(Rate-Limits & Spam Filter)"]
         TaskStore["src/task_tracker.py\n(Task Audit Persistence)"]
     end
@@ -251,6 +257,9 @@ python3 -m unittest discover tests/
 - `test_config.py`: Environment validation & `gh auth` resolution.
 - `test_safety.py`: Rate limit enforcement, spam sanitization, and daily PR caps.
 - `test_ai_engine.py`: Structured prompt generation and fallback heuristics.
+- `test_github_client.py`: Native async subprocess execution, non-blocking pipes, and error recovery.
+- `test_inbox_hunter.py`: Autonomous notification triage and multi-language issue discovery.
+- `test_web_dashboard.py`: Real-time telemetry HTTP server, status endpoints, and state reporting.
 
 ---
 
