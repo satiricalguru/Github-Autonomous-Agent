@@ -81,6 +81,16 @@ def detect_active_ai_model() -> str:
                                 return "gemini-3.8-flash"
                             elif "3.7" in raw:
                                 return "gemini-3.7-flash"
+                            elif "3.6" in raw:
+                                return "gemini-3.6-flash"
+                            elif "3.1" in raw and "pro" in raw.lower():
+                                return "gemini-3.1-pro"
+                            elif "sonnet" in raw.lower():
+                                return "claude-sonnet-4.6"
+                            elif "opus" in raw.lower():
+                                return "claude-opus-4.6"
+                            elif "gpt-oss" in raw.lower() or "120b" in raw.lower():
+                                return "gpt-oss-120b"
                             elif "2.5" in raw and "pro" in raw.lower():
                                 return "gemini-2.5-pro"
                             elif "2.5" in raw:
@@ -106,6 +116,16 @@ class AgentConfig(BaseModel):
             return "Gemini 3.8 Flash (High Reasoning)"
         elif "3.7" in name:
             return "Gemini 3.7 Flash (High Reasoning)"
+        elif "3.6" in name:
+            return "Gemini 3.6 Flash"
+        elif "3.1" in name and "pro" in name:
+            return "Gemini 3.1 Pro"
+        elif "sonnet" in name:
+            return "Claude Sonnet 4.6 (Thinking)"
+        elif "opus" in name:
+            return "Claude Opus 4.6 (Thinking)"
+        elif "gpt-oss" in name or "120b" in name:
+            return "GPT-OSS 120B (Medium)"
         elif "2.5" in name and "pro" in name:
             return "Gemini 2.5 Pro"
         elif "2.5" in name:
