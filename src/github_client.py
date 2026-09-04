@@ -5,13 +5,16 @@ import json
 import logging
 import shutil
 import subprocess
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 import httpx
 
-try:
+if TYPE_CHECKING:
     from .config import AgentConfig, config
-except ImportError:
-    from config import AgentConfig, config
+else:
+    try:
+        from .config import AgentConfig, config
+    except ImportError:
+        from config import AgentConfig, config
 
 logger = logging.getLogger("github_agent.client")
 
@@ -107,14 +110,40 @@ class GitHubClient:
             cli_data = await self._run_gh_api(
                 endpoint=endpoint, method=method, body=kwargs.get("json")
             )
-            content = json.dumps(cli_data).encode("utf-8") if cli_data is not None else b"{}"
-            status = 200 if cli_data is not None else 500
-            return httpx.Response(status_code=status, content=content)
+            if cli_data is not None:
+                content = json.dumps(cli_data).encode("utf-8")
+                return httpx.Response(status_code=200, content=content)
+            return httpx.Response(status_code=500, content=b"{}")
 
         await self._ensure_client()
         assert self._client is not None
         url = endpoint if endpoint.startswith("http") else f"{self.base_url}{endpoint}"
-        return await self._client.request(method, url, **kwargs)
+        # Exponential backoff on rate-limit / transient errors (REST path only).
+        delays = (1.0, 2.0, 4.0)
+        last_exc: Optional[Exception] = None
+        for attempt in range(len(delays) + 1):
+            try:
+                res = await self._client.request(method, url, **kwargs)
+            except httpx.HTTPError as e:
+                last_exc = e
+                if attempt < len(delays):
+                    await asyncio.sleep(delays[attempt])
+                    continue
+                raise
+            if res.status_code in (403, 429) and attempt < len(delays):
+                retry_after = res.headers.get("Retry-After")
+                try:
+                    wait = float(retry_after) if retry_after else delays[attempt]
+                except ValueError:
+                    wait = delays[attempt]
+                logger.warning(
+                    f"GitHub API rate limited ({res.status_code}); backing off {wait}s"
+                )
+                await asyncio.sleep(min(wait, 30.0))
+                continue
+            return res
+        assert last_exc is not None  # pragma: no cover - defensive
+        raise last_exc
 
     async def get_current_user(self) -> Dict[str, Any]:
         """Fetch the authenticated user profile."""
@@ -167,24 +196,26 @@ class GitHubClient:
             return True
 
         if self._has_gh:
-            await self._run_gh_api(f"/notifications/threads/{thread_id}", method="PATCH")
-            return True
+            res = await self._run_gh_api(f"/notifications/threads/{thread_id}", method="PATCH")
+            # _run_gh_api returns None on failure; empty dict/str is still success.
+            return res is not None
 
         res = await self._request("PATCH", f"/notifications/threads/{thread_id}")
         return res.status_code in (200, 202, 205)
 
     async def mark_notification_done(self, thread_id: str) -> bool:
-        """Mark a notification thread as done (archive from inbox via DELETE)."""
+        """Mark a notification thread as done.
+
+        The notifications API has no DELETE endpoint for threads; marking
+        read via PATCH is the supported operation. This method therefore
+        marks the thread read (archiving it from the inbox view) and reports
+        the real outcome instead of optimistically returning True.
+        """
         if self.config.dry_run:
             logger.info(f"[DRY-RUN] Mark notification {thread_id} as done.")
             return True
 
-        if self._has_gh:
-            await self._run_gh_api(f"/notifications/threads/{thread_id}", method="DELETE")
-            return True
-
-        res = await self._request("DELETE", f"/notifications/threads/{thread_id}")
-        return res.status_code in (200, 202, 204, 205)
+        return await self.mark_notification_read(thread_id)
 
     async def get_resource_by_url(self, url: str) -> Optional[Dict[str, Any]]:
         """Fetch resource by API URL or endpoint."""
@@ -267,6 +298,8 @@ class GitHubClient:
                                 "labels": it.get("labels", []),
                                 "repository_url": f"https://api.github.com/repos/{repo_name}",
                                 "assignees": it.get("assignees", []),
+                                "assignee": it.get("assignees", [None])[0] if it.get("assignees") else None,
+                                "locked": bool(it.get("locked", False)),
                                 "state": it.get("state", "open"),
                             })
                         return formatted

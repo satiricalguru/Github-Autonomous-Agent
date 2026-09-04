@@ -18,8 +18,11 @@ from src.cli import cmd_hunt
 class TestInboxHunter(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.state_file = Path(self.temp_dir.name) / "state.json"
+        tmp = Path(self.temp_dir.name)
+        self.state_file = tmp / "state.json"
         self.cfg = AgentConfig(
+            scratch_dir=tmp / "scratch",
+            repos_dir=tmp / "scratch" / "repos",
             state_file=self.state_file,
             min_repo_stars=1000,
             target_languages=["python"],
@@ -27,6 +30,11 @@ class TestInboxHunter(unittest.IsolatedAsyncioTestCase):
             dry_run=True,
         )
         self.safety = SafetyGuardrails(self.cfg)
+        # Isolated trackers so tests never pollute real scratch/*.json
+        from src.status_tracker import StatusTracker
+        from src.task_tracker import TaskTracker
+        self.status = StatusTracker(self.cfg)
+        self.tasks = TaskTracker(self.cfg)
 
     async def asyncTearDown(self):
         self.temp_dir.cleanup()
@@ -54,7 +62,7 @@ class TestInboxHunter(unittest.IsolatedAsyncioTestCase):
         mock_client.mark_notification_read = AsyncMock(return_value=True)
         mock_client.mark_notification_done = AsyncMock(return_value=True)
 
-        inbox = InboxManager(client=mock_client, safety=self.safety, agent_config=self.cfg)
+        inbox = InboxManager(client=mock_client, safety=self.safety, agent_config=self.cfg, status=self.status, tasks=self.tasks)
         results = await inbox.process_inbox()
 
         self.assertEqual(len(results), 1)
@@ -85,7 +93,7 @@ class TestInboxHunter(unittest.IsolatedAsyncioTestCase):
 
         mock_client.search_issues = AsyncMock(side_effect=mock_search)
 
-        hunter = IssueHunter(client=mock_client, safety=self.safety, agent_config=self.cfg)
+        hunter = IssueHunter(client=mock_client, safety=self.safety, agent_config=self.cfg, status=self.status)
         candidates = await hunter.hunt_issues(limit=1)
 
         self.assertGreaterEqual(len(candidates), 1)

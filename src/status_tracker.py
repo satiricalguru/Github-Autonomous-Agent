@@ -2,6 +2,7 @@
 
 import json
 import logging
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,9 +28,12 @@ class StatusTracker:
     def __init__(self, agent_config: Optional[AgentConfig] = None):
         self.config = agent_config or config
         self.status_file = self.config.scratch_dir / "agent_status.json"
-        
+        self._lock = threading.Lock()
+
         self.active_model = self.config.model_name
         self.ai_mode = "Gemini API (Online)" if (self.config.gemini_api_key) else "Antigravity Heuristic Engine"
+        self.rate_limit_remaining = 5000
+        self.rate_limit_limit = 5000
         
         self.overall_status = "INITIALIZING"
         self.inbox_status: Dict[str, Any] = {
@@ -57,20 +61,59 @@ class StatusTracker:
         try:
             with open(self.status_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                self.overall_status = data.get("overall_status", "RUNNING")
+                self.overall_status = data.get("overall_status", self.overall_status)
                 self.inbox_status = data.get("inbox_status", self.inbox_status)
                 self.hunter_status = data.get("hunter_status", self.hunter_status)
                 self.recent_events = data.get("recent_events", [])
+                if isinstance(data.get("rate_limit_remaining"), int):
+                    self.rate_limit_remaining = data["rate_limit_remaining"]
+                if isinstance(data.get("rate_limit_limit"), int):
+                    self.rate_limit_limit = data["rate_limit_limit"]
         except Exception:
             pass
 
     def save(self):
-        """Persist status snapshot to disk."""
+        """Persist status snapshot to disk (thread-safe)."""
         try:
-            snapshot = self.get_snapshot()
-            atomic_write_json(self.status_file, snapshot)
+            with self._lock:
+                snapshot = self.get_snapshot()
+                atomic_write_json(self.status_file, snapshot)
         except Exception as e:
             logger.warning(f"Failed to persist agent status: {e}")
+
+    def rebind(self, agent_config: Optional[AgentConfig] = None):
+        """Re-point this tracker at a different config (tests/isolated runs)."""
+        if agent_config is not None:
+            self.config = agent_config
+            self.status_file = self.config.scratch_dir / "agent_status.json"
+        with self._lock:
+            self.overall_status = "INITIALIZING"
+            self.inbox_status = {
+                "state": "IDLE",
+                "current_action": "Waiting for worker start",
+                "last_check": None,
+                "next_check": None,
+                "handled_count": 0,
+            }
+            self.hunter_status = {
+                "state": "IDLE",
+                "current_action": "Waiting for worker start",
+                "current_query": None,
+                "active_repo": None,
+                "active_step": None,
+                "last_check": None,
+                "next_check": None,
+            }
+            self.recent_events = []
+        self._load()
+
+    def set_rate_limit(self, remaining: int, limit: int):
+        """Record the last observed GitHub API quota."""
+        try:
+            self.rate_limit_remaining = int(remaining)
+            self.rate_limit_limit = int(limit)
+        except (ValueError, TypeError):
+            return
 
     def update_inbox(
         self,
@@ -123,6 +166,11 @@ class StatusTracker:
 
     def get_snapshot(self) -> Dict[str, Any]:
         """Return structured status snapshot."""
+        # Sync cached model label with live config (web UI may change it).
+        try:
+            self.active_model = self.config.model_name
+        except Exception:
+            pass
         return {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "active_model": self.config.model_name,
@@ -140,8 +188,8 @@ class StatusTracker:
             "inbox_worker": self.inbox_status,
             "hunter_worker": self.hunter_status,
             "recent_events": self.recent_events[:10],
-            "rate_limit_remaining": 5000,
-            "rate_limit_limit": 5000,
+            "rate_limit_remaining": self.rate_limit_remaining,
+            "rate_limit_limit": self.rate_limit_limit,
         }
 
     def render_dashboard(self) -> Panel:
@@ -155,7 +203,7 @@ class StatusTracker:
         overview_table.add_column("Property", style="bold yellow")
         overview_table.add_column("Value", style="green")
 
-        overview_table.add_row("Active AI Model", f"[bold magenta]{self.active_model.upper()}[/bold magenta] (High Reasoning)")
+        overview_table.add_row("Active AI Model", f"[bold magenta]{self.config.model_name.upper()}[/bold magenta] ({self.config.model_display_name})")
         overview_table.add_row("AI Provider", self.ai_mode)
         overview_table.add_row("Agent State", f"[bold green]{self.overall_status}[/bold green]")
         overview_table.add_row("Execution Mode", "[yellow]DRY-RUN (Simulated)[/yellow]" if self.config.dry_run else "[bold green]LIVE[/bold green]")

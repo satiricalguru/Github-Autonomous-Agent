@@ -2,6 +2,7 @@
 
 import json
 import logging
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -29,6 +30,7 @@ class TaskTracker:
         self.config = agent_config or config
         self.tasks_file = self.config.scratch_dir / "tasks_history.json"
         self.tasks: List[Dict[str, Any]] = []
+        self._lock = threading.Lock()
         self._load()
 
     def _load(self):
@@ -44,9 +46,19 @@ class TaskTracker:
 
     def save(self):
         try:
-            atomic_write_json(self.tasks_file, self.tasks)
+            with self._lock:
+                tasks_snapshot = list(self.tasks)
+            atomic_write_json(self.tasks_file, tasks_snapshot)
         except Exception as e:
             logger.warning(f"Failed to save tasks history: {e}")
+
+    def rebind(self, agent_config: Optional[AgentConfig] = None):
+        """Re-point this tracker at a different config (tests/isolated runs)."""
+        if agent_config is not None:
+            self.config = agent_config
+            self.tasks_file = self.config.scratch_dir / "tasks_history.json"
+        self.tasks = []
+        self._load()
 
     def create_task(
         self,
@@ -57,7 +69,7 @@ class TaskTracker:
         details: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Register a new task in progress."""
-        task_id = f"TASK-{int(time.time()):06d}-{uuid.uuid4().hex[:4].upper()}"
+        task_id = f"TASK-{int(time.time())}-{uuid.uuid4().hex[:4].upper()}"
         task_obj = {
             "id": task_id,
             "category": category,
@@ -97,7 +109,7 @@ class TaskTracker:
         return self.tasks
 
     def get_completed_tasks(self) -> List[Dict[str, Any]]:
-        return [t for t in self.tasks if t["status"] in ("COMPLETED", "SKIPPED", "REJECTED")]
+        return [t for t in self.tasks if t["status"] in ("COMPLETED", "SKIPPED", "REJECTED", "FAILED")]
 
     def get_active_tasks(self) -> List[Dict[str, Any]]:
         return [t for t in self.tasks if t["status"] == "IN_PROGRESS"]
@@ -120,19 +132,26 @@ class TaskTracker:
             status_style = {
                 "IN_PROGRESS": "[bold yellow]⏳ RUNNING[/bold yellow]",
                 "COMPLETED": "[bold green]✓ COMPLETED[/bold green]",
+                "FAILED": "[bold red]✗ FAILED[/bold red]",
                 "SKIPPED": "[dim]↷ SKIPPED[/dim]",
                 "REJECTED": "[bold red]✗ REJECTED[/bold red]",
             }.get(t["status"], t["status"])
 
-            time_str = t["completed_at"].split(" ")[1] if t["completed_at"] else t["started_at"].split(" ")[1]
-            repo_prefix = f"[{t['target_repo']}] " if t['target_repo'] != "N/A" else ""
+            completed_at = t.get("completed_at") or ""
+            started_at = t.get("started_at") or ""
+            time_src = completed_at or started_at
+            try:
+                time_str = time_src.split(" ")[1] if " " in time_src else time_src
+            except Exception:
+                time_str = "--:--:--"
+            repo_prefix = f"[{t.get('target_repo', 'N/A')}] " if t.get('target_repo') not in (None, "N/A", "") else ""
             table.add_row(
-                t["id"],
-                t["category"],
-                f"{repo_prefix}{t['title'][:45]}",
+                t.get("id", "--"),
+                t.get("category", "?"),
+                f"{repo_prefix}{str(t.get('title', ''))[:45]}",
                 status_style,
-                time_str,
-                t["outcome"][:40],
+                time_str or "--:--:--",
+                str(t.get("outcome", ""))[:40],
             )
 
         return table

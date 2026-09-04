@@ -4,10 +4,8 @@ import argparse
 import asyncio
 import logging
 import signal
-import sys
-from typing import Any, Dict, List, Optional
+from typing import Optional
 from rich.console import Console
-from rich.panel import Panel
 from rich.table import Table
 
 try:
@@ -58,7 +56,11 @@ def cmd_tasks():
 def cmd_web(port: int = 3000):
     """Launch the live web dashboard interface."""
     import time
-    server = start_web_server(port=port)
+    try:
+        server = start_web_server(port=port)
+    except OSError as e:
+        console.print(f"[bold red]Failed to bind web dashboard on port {port}: {e}[/bold red]")
+        return
     if server:
         console.print(f"[bold green]✓ Live Web Dashboard running at:[/bold green] [bold cyan]http://localhost:{port}[/bold cyan]")
         console.print("[dim]Press Ctrl+C to stop the dashboard server.[/dim]")
@@ -67,7 +69,13 @@ def cmd_web(port: int = 3000):
                 time.sleep(1)
         except KeyboardInterrupt:
             console.print("\n[yellow]Stopping web dashboard...[/yellow]")
-            server.shutdown()
+            try:
+                server.shutdown()
+                server.server_close()
+            except Exception:
+                pass
+    else:
+        console.print(f"[bold red]Could not start web dashboard on port {port} (already in use?).[/bold red]")
 
 
 async def cmd_inbox(dry_run: Optional[bool] = None):
@@ -93,11 +101,11 @@ async def cmd_inbox(dry_run: Optional[bool] = None):
 
         for r in results:
             table.add_row(
-                str(r["thread_id"]),
-                r["repo"],
-                r["title"][:50],
-                r["reason"],
-                r["action"],
+                str(r.get("thread_id", "--")),
+                str(r.get("repo", "?")),
+                str(r.get("title", ""))[:50],
+                str(r.get("reason", "")),
+                str(r.get("action", "")),
             )
 
         console.print(table)
@@ -105,6 +113,7 @@ async def cmd_inbox(dry_run: Optional[bool] = None):
 
 async def cmd_hunt(limit: int = 5):
     """Search for actionable bug issues in top-tier repositories."""
+    limit = max(1, min(int(limit or 5), 50))
     console.print(f"[bold cyan]Hunting top-tier issues (limit={limit})...[/bold cyan]")
     async with GitHubClient(config) as client:
         hunter = IssueHunter(client=client, agent_config=config)
@@ -123,13 +132,17 @@ async def cmd_hunt(limit: int = 5):
         table.add_column("URL", style="blue")
 
         for iss in issues:
+            try:
+                score_val = float(iss.get("score", 0.0))
+            except (ValueError, TypeError):
+                score_val = 0.0
             table.add_row(
-                iss["repo"],
-                str(iss["issue_number"]),
-                iss["title"][:50],
-                iss.get("language", "N/A"),
-                f"{iss['score']:.2f}",
-                iss["url"],
+                str(iss.get("repo", "?")),
+                str(iss.get("issue_number", "?")),
+                str(iss.get("title", ""))[:50],
+                str(iss.get("language", "N/A")),
+                f"{score_val:.2f}",
+                str(iss.get("url", "")),
             )
 
         console.print(table)
@@ -139,6 +152,7 @@ async def cmd_solve(auto: bool = True, limit: int = 1, dry_run: Optional[bool] =
     """Find actionable top-tier issues and attempt verified solution."""
     if dry_run is not None:
         config.dry_run = dry_run
+    limit = max(1, min(int(limit or 1), 10))
     console.print(f"[bold cyan]Hunting and solving top-tier issues (auto={auto}, limit={limit}, mode={'DRY-RUN' if config.dry_run else 'LIVE'})...[/bold cyan]")
     async with GitHubClient(config) as client:
         hunter = IssueHunter(client=client, agent_config=config)
@@ -148,12 +162,12 @@ async def cmd_solve(auto: bool = True, limit: int = 1, dry_run: Optional[bool] =
             console.print("[yellow]No actionable issues discovered matching search criteria.[/yellow]")
             return
         for c in candidates:
-            console.print(f"[cyan]Attempting fix for {c['repo']}#{c['issue_number']}: {c['title']}[/cyan]")
+            console.print(f"[cyan]Attempting fix for {c.get('repo', '?')}#{c.get('issue_number', '?')}: {c.get('title', '')[:80]}[/cyan]")
             res = await solver.solve_issue(c)
             if res:
-                console.print(f"[bold green]✓ PR Processed:[/bold green] {res['pr_url']} (Dry Run: {res.get('dry_run', False)})")
+                console.print(f"[bold green]✓ PR Processed:[/bold green] {res.get('pr_url', '?')} (Dry Run: {res.get('dry_run', False)})")
             else:
-                console.print(f"[yellow]Could not complete fix for {c['repo']}#{c['issue_number']}[/yellow]")
+                console.print(f"[yellow]Could not complete fix for {c.get('repo', '?')}#{c.get('issue_number', '?')}[/yellow]")
 
 
 def cmd_stop():
@@ -164,22 +178,31 @@ def cmd_stop():
     console.print("[bold yellow]✓ Signaled Autonomous GitHub Agent to stop.[/bold yellow]")
 
 
-async def cmd_start(dry_run: Optional[bool] = None):
+async def cmd_start(dry_run: Optional[bool] = None, web_port: int = 3000):
     """Start continuous autonomous loop with graceful shutdown."""
     if dry_run is not None:
         config.dry_run = dry_run
 
-    orchestrator = AutonomousOrchestrator(config)
+    orchestrator = AutonomousOrchestrator(config, web_port=web_port)
 
     # Register OS signal handlers
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            loop.add_signal_handler(sig, lambda: orchestrator.stop())
+            loop.add_signal_handler(sig, orchestrator.stop)
         except NotImplementedError:
             pass
 
     await orchestrator.start()
+
+
+def _resolve_dry_run(args) -> Optional[bool]:
+    """Resolve --dry-run/--live flags (live wins if both are passed)."""
+    if getattr(args, "live", False):
+        return False
+    if getattr(args, "dry_run", False):
+        return True
+    return None
 
 
 def main():
@@ -192,6 +215,7 @@ def main():
     start_parser = subparsers.add_parser("start", help="Start continuous autonomous agent loop")
     start_parser.add_argument("--dry-run", action="store_true", help="Run in dry-run mode (no live writes)")
     start_parser.add_argument("--live", action="store_true", help="Run in live mode (submits PRs and replies)")
+    start_parser.add_argument("--port", type=int, default=3000, help="Port for live web dashboard (default: 3000)")
 
     # Status command
     subparsers.add_parser("status", help="Check agent status, credentials, and rate limits")
@@ -206,6 +230,7 @@ def main():
     # Inbox command
     inbox_parser = subparsers.add_parser("inbox", help="Run a single pass of inbox triage")
     inbox_parser.add_argument("--dry-run", action="store_true", help="Simulate replies only")
+    inbox_parser.add_argument("--live", action="store_true", help="Submit real replies")
 
     # Hunt command
     hunt_parser = subparsers.add_parser("hunt", help="Search top-tier repos for open issues")
@@ -213,9 +238,10 @@ def main():
 
     # Solve command
     solve_parser = subparsers.add_parser("solve", help="Hunt and autonomously solve issues")
-    solve_parser.add_argument("--auto", action="store_true", default=True, help="Autonomously solve issues without prompting")
+    solve_parser.add_argument("--auto", dest="auto", action=argparse.BooleanOptionalAction, default=True, help="Autonomously solve issues without prompting (--no-auto to disable)")
     solve_parser.add_argument("--limit", type=int, default=1, help="Number of issues to solve")
     solve_parser.add_argument("--dry-run", action="store_true", help="Simulate PR creation only")
+    solve_parser.add_argument("--live", action="store_true", help="Submit real PRs")
 
     # Stop command
     subparsers.add_parser("stop", help="Signal autonomous agent to stop")
@@ -230,16 +256,15 @@ def main():
     elif args.command == "web":
         cmd_web(port=args.port)
     elif args.command == "inbox":
-        asyncio.run(cmd_inbox(dry_run=args.dry_run if args.dry_run else None))
+        asyncio.run(cmd_inbox(dry_run=_resolve_dry_run(args)))
     elif args.command == "hunt":
-        asyncio.run(cmd_hunt(limit=args.limit))
+        asyncio.run(cmd_hunt(limit=max(1, min(args.limit, 50))))
     elif args.command == "solve":
-        asyncio.run(cmd_solve(auto=args.auto, limit=args.limit, dry_run=args.dry_run if args.dry_run else None))
+        asyncio.run(cmd_solve(auto=args.auto, limit=max(1, min(args.limit, 10)), dry_run=_resolve_dry_run(args)))
     elif args.command == "stop":
         cmd_stop()
     elif args.command == "start" or args.command is None:
-        dry_run = True if getattr(args, "dry_run", False) else (False if getattr(args, "live", False) else None)
-        asyncio.run(cmd_start(dry_run=dry_run))
+        asyncio.run(cmd_start(dry_run=_resolve_dry_run(args), web_port=getattr(args, "port", 3000)))
     else:
         parser.print_help()
 

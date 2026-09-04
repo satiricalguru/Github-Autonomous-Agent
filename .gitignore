@@ -12,6 +12,9 @@ ENV/
 
 # Scratch & Sandbox Directories
 scratch/repos/
+scratch/*.json
+scratch/*.tmp*
+*.tmp.*
 
 # Testing & Coverage
 .pytest_cache/

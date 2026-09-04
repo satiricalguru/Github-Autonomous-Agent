@@ -5,14 +5,18 @@ import logging
 import os
 import re
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
-try:
+if TYPE_CHECKING:
     from .config import AgentConfig, config
-except ImportError:
-    from config import AgentConfig, config
+else:
+    try:
+        from .config import AgentConfig, config
+    except ImportError:
+        from config import AgentConfig, config
 
 logger = logging.getLogger("github_agent.safety")
 
@@ -20,6 +24,7 @@ logger = logging.getLogger("github_agent.safety")
 AI_SPAM_SIGNATURES = [
     r"as an ai (language )?model",
     r"i am an ai agent",
+    r"i am a bot",
     r"as a large language model",
     r"i cannot fulfill this request",
     r"here is the fixed code:",
@@ -32,7 +37,9 @@ AI_SPAM_SIGNATURES = [
 def atomic_write_json(file_path: Path, data: Any):
     """Atomically writes JSON data to disk using a temporary file and atomic replace."""
     file_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_file = file_path.with_name(f"{file_path.name}.tmp.{int(time.time() * 1000)}")
+    temp_file = file_path.with_name(
+        f"{file_path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
+    )
     try:
         with open(temp_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -67,6 +74,13 @@ class StateStore:
                 self.submitted_prs = data.get("submitted_prs", [])
         except Exception as e:
             logger.warning(f"Failed to load state file {self.state_file}: {e}")
+            # Preserve corrupt file for forensics instead of silently dropping it.
+            try:
+                backup = self.state_file.with_suffix(".corrupt.bak")
+                if not backup.exists():
+                    self.state_file.replace(backup)
+            except Exception:
+                pass
 
     def save(self):
         try:

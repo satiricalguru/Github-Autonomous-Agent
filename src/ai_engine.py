@@ -26,17 +26,37 @@ def extract_json_payload(text: str) -> Optional[Dict[str, Any]]:
             lines = lines[:-1]
         cleaned = "\n".join(lines).strip()
     try:
-        return json.loads(cleaned)
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, dict):
+            return parsed
     except Exception:
         pass
 
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match:
+    # Fall back to balancing braces: try largest plausible {...} span first,
+    # then shrink from the right until JSON parses (handles trailing chatter).
+    start = text.find("{")
+    end = text.rfind("}")
+    while start != -1 and end != -1 and end > start:
+        candidate = text[start : end + 1].strip()
         try:
-            return json.loads(match.group(0).strip())
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict):
+                return parsed
         except Exception:
             pass
+        end = text.rfind("}", start, end)
     return None
+
+
+_VALID_MODEL_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{1,64}$")
+
+
+def sanitize_model_name(model: str, fallback: str = "gemini-3.8-flash") -> str:
+    """Validate a model identifier before interpolating it into a request URL."""
+    model = (model or "").strip()
+    if _VALID_MODEL_RE.match(model):
+        return model
+    return fallback
 
 
 class AIEngine:
@@ -54,7 +74,7 @@ class AIEngine:
         if not self.api_key:
             return None
 
-        model = self.config.model_name or "gemini-3.7-flash"
+        model = sanitize_model_name(self.config.model_name or "gemini-3.8-flash")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
@@ -129,7 +149,10 @@ Return JSON format only:
             "should_respond": needs_reply,
             "confidence": 0.7,
             "rationale": f"Heuristic based on notification reason: {reason}",
-            "suggested_reply": f"Thanks for tagging me. I am looking into this and will follow up shortly.",
+            "suggested_reply": (
+                f"Thanks for tagging me on [{repo}] {title}. "
+                "I am looking into this and will follow up shortly."
+            ),
         }
 
     async def analyze_issue_actionability(

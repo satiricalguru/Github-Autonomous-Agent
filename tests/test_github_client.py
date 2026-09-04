@@ -15,6 +15,7 @@ class TestGitHubClient(unittest.IsolatedAsyncioTestCase):
         client = GitHubClient(AgentConfig(dry_run=True))
         res = await client._run_command(["echo", "hello"])
         self.assertIsNotNone(res)
+        assert res is not None
         returncode, stdout, stderr = res
         self.assertEqual(returncode, 0)
         self.assertIn("hello", stdout)

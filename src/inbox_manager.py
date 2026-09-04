@@ -1,23 +1,31 @@
 """GitHub Inbox & Notification Manager."""
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from rich.console import Console
 
-try:
+if TYPE_CHECKING:
     from .ai_engine import AIEngine
     from .config import AgentConfig, config
     from .github_client import GitHubClient
     from .safety_guardrails import SafetyGuardrails
-    from .status_tracker import status_tracker
-    from .task_tracker import task_tracker
-except ImportError:
-    from ai_engine import AIEngine
-    from config import AgentConfig, config
-    from github_client import GitHubClient
-    from safety_guardrails import SafetyGuardrails
-    from status_tracker import status_tracker
-    from task_tracker import task_tracker
+    from .status_tracker import StatusTracker, status_tracker
+    from .task_tracker import TaskTracker, task_tracker
+else:
+    try:
+        from .ai_engine import AIEngine
+        from .config import AgentConfig, config
+        from .github_client import GitHubClient
+        from .safety_guardrails import SafetyGuardrails
+        from .status_tracker import StatusTracker, status_tracker
+        from .task_tracker import TaskTracker, task_tracker
+    except ImportError:
+        from ai_engine import AIEngine
+        from config import AgentConfig, config
+        from github_client import GitHubClient
+        from safety_guardrails import SafetyGuardrails
+        from status_tracker import StatusTracker, status_tracker
+        from task_tracker import TaskTracker, task_tracker
 
 logger = logging.getLogger("github_agent.inbox")
 console = Console()
@@ -32,40 +40,46 @@ class InboxManager:
         safety: Optional[SafetyGuardrails] = None,
         ai: Optional[AIEngine] = None,
         agent_config: Optional[AgentConfig] = None,
+        status: Optional[StatusTracker] = None,
+        tasks: Optional[TaskTracker] = None,
     ):
         self.config = agent_config or config
         self.client = client or GitHubClient(self.config)
         self.safety = safety or SafetyGuardrails(self.config)
         self.ai = ai or AIEngine(self.config)
+        self.status = status if status is not None else status_tracker
+        self.tasks = tasks if tasks is not None else task_tracker
 
     async def process_inbox(self) -> List[Dict[str, Any]]:
         """Fetch and process all unread GitHub notifications."""
         results = []
-        status_tracker.update_inbox("POLLING", "Fetching unread notifications from GitHub...")
+        self.status.update_inbox("POLLING", "Fetching unread notifications from GitHub...")
         notifications = await self.client.get_notifications(all_notifications=False)
-        
+
         if not notifications:
             logger.info("Inbox clean: No unread notifications.")
-            status_tracker.update_inbox("IDLE", "Inbox clean (0 unread notifications)")
+            self.status.update_inbox("IDLE", "Inbox clean (0 unread notifications)")
             return []
 
         logger.info(f"Found {len(notifications)} unread notification(s). Processing...")
-        status_tracker.update_inbox("PROCESSING", f"Triaging {len(notifications)} notification(s)...")
+        self.status.update_inbox("PROCESSING", f"Triaging {len(notifications)} notification(s)...")
 
         for notif in notifications:
-            thread_id = str(notif.get("id"))
+            thread_id = str(notif.get("id", ""))
+            if not thread_id:
+                continue
             repo_name = notif.get("repository", {}).get("full_name", "unknown")
             reason = notif.get("reason", "unknown")
-            subject = notif.get("subject", {})
+            subject = notif.get("subject", {}) or {}
             subject_title = subject.get("title", "No Title")
             subject_type = subject.get("type", "Unknown")
-            subject_url = subject.get("url", "")
+            subject_url = subject.get("url", "") or ""
 
             # Check if already processed
             if self.safety.state.is_notification_handled(thread_id):
                 continue
 
-            status_tracker.update_inbox("TRIAGING", f"Evaluating [{repo_name}] {subject_title[:30]}...")
+            self.status.update_inbox("TRIAGING", f"Evaluating [{repo_name}] {subject_title[:30]}...")
             logger.info(f"Triage: [{repo_name}] {subject_type} - {subject_title} (Reason: {reason})")
 
             # Fetch issue/PR context if available
@@ -111,7 +125,7 @@ class InboxManager:
                 elif not is_safe:
                     logger.warning(f"Reply rejected by safety guardrail: {reason_msg}")
 
-            task_id = task_tracker.create_task(
+            task_id = self.tasks.create_task(
                 category="INBOX",
                 title=f"Triage {subject_type}: {subject_title}",
                 target_repo=repo_name,
@@ -126,8 +140,8 @@ class InboxManager:
                 if hasattr(done_coro, "__await__"):
                     await done_coro
             self.safety.state.mark_notification_handled(thread_id)
-            status_tracker.log_event("INBOX", f"{action_taken.title()} on [{repo_name}] {subject_title[:40]}")
-            task_tracker.complete_task(
+            self.status.log_event("INBOX", f"{action_taken.title()} on [{repo_name}] {subject_title[:40]}")
+            self.tasks.complete_task(
                 task_id=task_id,
                 status="COMPLETED",
                 outcome=f"{action_taken.title()}: {evaluation.get('rationale', 'Evaluated with AI')}",
@@ -145,5 +159,5 @@ class InboxManager:
                 }
             )
 
-        status_tracker.update_inbox("IDLE", "Inbox triage completed", handled_count=len(self.safety.state.handled_notifications))
+        self.status.update_inbox("IDLE", "Inbox triage completed", handled_count=len(self.safety.state.handled_notifications))
         return results

@@ -12,9 +12,25 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _safe_int(env_key: str, default: int, minimum: Optional[int] = None) -> int:
+    """Parse an int env var defensively, falling back to default on bad input."""
+    try:
+        value = int(str(os.getenv(env_key, str(default))).strip())
+    except (ValueError, TypeError, AttributeError):
+        return default
+    if minimum is not None and value < minimum:
+        return default
+    return value
+
+
+def _gh_disabled() -> bool:
+    """Allow skipping gh CLI subprocess calls (CI/tests) via env flag."""
+    return os.getenv("GITHUB_AGENT_NO_GH", "").lower() in ("true", "1", "yes")
+
+
 def get_gh_cli_token() -> Optional[str]:
     """Attempts to retrieve the current GitHub token from `gh auth token`."""
-    if not shutil.which("gh"):
+    if _gh_disabled() or not shutil.which("gh"):
         return None
     try:
         result = subprocess.run(
@@ -32,7 +48,7 @@ def get_gh_cli_token() -> Optional[str]:
 
 def get_gh_cli_username() -> Optional[str]:
     """Attempts to retrieve the active GitHub username from `gh api user`."""
-    if not shutil.which("gh"):
+    if _gh_disabled() or not shutil.which("gh"):
         return None
     try:
         result = subprocess.run(
@@ -55,7 +71,7 @@ def detect_active_ai_model() -> str:
         return env_model
 
     conv_id = os.getenv("ANTIGRAVITY_CONVERSATION_ID")
-    if conv_id:
+    if conv_id and len(conv_id) < 256 and "/" not in conv_id and "\\" not in conv_id:
         transcript = (
             Path.home()
             / ".gemini"
@@ -70,8 +86,12 @@ def detect_active_ai_model() -> str:
             try:
                 import re
 
+                # Cap transcript scan to avoid pathological I/O on huge files.
+                max_lines = 500
                 with open(transcript, "r", encoding="utf-8") as f:
-                    for line in f:
+                    for idx, line in enumerate(f):
+                        if idx >= max_lines or len(line) > 20000:
+                            continue
                         m = re.search(
                             r"Model Selection\` from \S+ to (.+?)\.\s*No need", line
                         )
@@ -133,10 +153,28 @@ class AgentConfig(BaseModel):
         return self.model_name.upper()
 
     def update(self, **kwargs):
-        """Update runtime configuration fields safely."""
+        """Update runtime configuration fields safely with validation."""
         for key, value in kwargs.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
+            if not hasattr(self, key):
+                continue
+            # Coerce numeric interval/limit fields defensively.
+            if key in (
+                "inbox_poll_interval",
+                "issue_hunt_interval",
+                "max_concurrent_tasks",
+                "min_repo_stars",
+                "max_prs_per_day",
+                "min_rate_limit_remaining",
+            ):
+                try:
+                    value = int(value)
+                except (ValueError, TypeError):
+                    continue
+                if key in ("inbox_poll_interval", "issue_hunt_interval") and value < 5:
+                    continue
+                if key in ("max_concurrent_tasks", "max_prs_per_day") and value < 1:
+                    continue
+            setattr(self, key, value)
     github_token: Optional[str] = Field(
         default_factory=lambda: os.getenv("GITHUB_TOKEN") or get_gh_cli_token()
     )
@@ -155,19 +193,19 @@ class AgentConfig(BaseModel):
 
     # Concurrency & Intervals (seconds)
     inbox_poll_interval: int = Field(
-        default_factory=lambda: int(os.getenv("INBOX_POLL_INTERVAL", "60"))
+        default_factory=lambda: _safe_int("INBOX_POLL_INTERVAL", 60, minimum=5)
     )
     issue_hunt_interval: int = Field(
-        default_factory=lambda: int(os.getenv("ISSUE_HUNT_INTERVAL", "300"))
+        default_factory=lambda: _safe_int("ISSUE_HUNT_INTERVAL", 300, minimum=5)
     )
     max_concurrent_tasks: int = Field(
-        default_factory=lambda: int(os.getenv("MAX_CONCURRENT_TASKS", "3"))
+        default_factory=lambda: _safe_int("MAX_CONCURRENT_TASKS", 3, minimum=1)
     )
 
     # Issue Hunter Search Criteria
     target_languages: List[str] = Field(
         default_factory=lambda: [
-            lang.strip()
+            lang.strip().lower()
             for lang in os.getenv(
                 "TARGET_LANGUAGES", "python,typescript,javascript,go,rust"
             ).split(",")
@@ -175,7 +213,7 @@ class AgentConfig(BaseModel):
         ]
     )
     min_repo_stars: int = Field(
-        default_factory=lambda: int(os.getenv("MIN_REPO_STARS", "1000"))
+        default_factory=lambda: _safe_int("MIN_REPO_STARS", 1000, minimum=0)
     )
     target_labels: List[str] = Field(
         default_factory=lambda: [
@@ -189,28 +227,42 @@ class AgentConfig(BaseModel):
 
     # Safety & Limits
     max_prs_per_day: int = Field(
-        default_factory=lambda: int(os.getenv("MAX_PRS_PER_DAY", "5"))
+        default_factory=lambda: _safe_int("MAX_PRS_PER_DAY", 5, minimum=1)
     )
     min_rate_limit_remaining: int = Field(
-        default_factory=lambda: int(os.getenv("MIN_RATE_LIMIT_REMAINING", "100"))
+        default_factory=lambda: _safe_int("MIN_RATE_LIMIT_REMAINING", 100, minimum=0)
     )
 
-    # Directories & State
-    base_dir: Path = Field(default_factory=lambda: Path.cwd())
+    # Directories & State (overridable via BASE_DIR / SCRATCH_DIR env for tests)
+    base_dir: Path = Field(
+        default_factory=lambda: Path(os.getenv("BASE_DIR", str(Path.cwd())))
+    )
     scratch_dir: Path = Field(
-        default_factory=lambda: Path.cwd() / "scratch"
+        default_factory=lambda: Path(
+            os.getenv("SCRATCH_DIR", str(Path.cwd() / "scratch"))
+        )
     )
     repos_dir: Path = Field(
-        default_factory=lambda: Path.cwd() / "scratch" / "repos"
+        default_factory=lambda: Path(
+            os.getenv("SCRATCH_DIR", str(Path.cwd() / "scratch"))
+        )
+        / "repos"
     )
     state_file: Path = Field(
-        default_factory=lambda: Path.cwd() / "scratch" / "agent_state.json"
+        default_factory=lambda: Path(
+            os.getenv("SCRATCH_DIR", str(Path.cwd() / "scratch"))
+        )
+        / "agent_state.json"
     )
 
     def model_post_init(self, __context):
-        """Ensure directories exist."""
-        self.scratch_dir.mkdir(parents=True, exist_ok=True)
-        self.repos_dir.mkdir(parents=True, exist_ok=True)
+        """Ensure directories exist (best-effort, never crash on read-only FS)."""
+        try:
+            self.scratch_dir.mkdir(parents=True, exist_ok=True)
+            self.repos_dir.mkdir(parents=True, exist_ok=True)
+            self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
 
 
 # Global singleton configuration

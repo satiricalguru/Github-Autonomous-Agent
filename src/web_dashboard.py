@@ -1668,8 +1668,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           <select class="form-control" id="setting-model" style="font-weight: 600;">
             <option value="gemini-3.8-flash" selected>Google Gemini 3.8 Flash (High Reasoning - Antigravity)</option>
             <option value="gemini-3.7-flash">Google Gemini 3.7 Flash (High Reasoning)</option>
+            <option value="gemini-3.6-flash">Google Gemini 3.6 Flash</option>
+            <option value="gemini-3.1-pro">Google Gemini 3.1 Pro</option>
             <option value="gemini-2.5-flash">Google Gemini 2.5 Flash</option>
             <option value="gemini-2.5-pro">Google Gemini 2.5 Pro</option>
+            <option value="claude-sonnet-4.6">Claude Sonnet 4.6 (Thinking)</option>
+            <option value="claude-opus-4.6">Claude Opus 4.6 (Thinking)</option>
+            <option value="gpt-oss-120b">GPT-OSS 120B (Medium)</option>
           </select>
         </div>
 
@@ -1734,6 +1739,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     let globalData = null;
     let currentCategoryFilter = 'ALL';
     let currentSearchTerm = '';
+    let taskById = {};
+
+    // Escape untrusted server data before injecting into HTML (XSS hardening).
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"'`=]/g, (ch) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;',
+        "'": '&#x27;', '`': '&#x60;', '=': '&#x3D;'
+      }[ch]));
+    }
 
     // Mobile Sidebar Drawer
     function toggleMobileSidebar() {
@@ -1821,17 +1835,22 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     const savedTab = localStorage.getItem('active_tab') || 'dashboard';
     switchTab(savedTab);
 
-    // Inspect Task in Modal
+    // Inspect Task in Modal (look up by id to avoid inline-JSON quoting/XSS bugs)
+    function inspectTaskById(taskId) {
+      const taskObj = taskById[taskId];
+      if (!taskObj) return;
+      inspectTask(taskObj);
+    }
     function inspectTask(taskObj) {
-      document.getElementById('modal-task-title').textContent = `${taskObj.id}: ${taskObj.title}`;
+      document.getElementById('modal-task-title').textContent = `${taskObj.id || 'TASK'}: ${taskObj.title || ''}`;
       document.getElementById('modal-task-meta').innerHTML = `
         <div style="display: flex; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap;">
-          <span class="cat-badge">${taskObj.category}</span>
-          <span class="cat-badge" style="color: var(--accent-green);">● ${taskObj.status}</span>
-          <span style="font-size: 0.8rem; color: var(--text-muted); font-family: monospace;">${taskObj.completed_at || taskObj.started_at || 'Recently'}</span>
+          <span class="cat-badge">${escapeHtml(taskObj.category)}</span>
+          <span class="cat-badge" style="color: var(--accent-green);">● ${escapeHtml(taskObj.status)}</span>
+          <span style="font-size: 0.8rem; color: var(--text-muted); font-family: monospace;">${escapeHtml(taskObj.completed_at || taskObj.started_at || 'Recently')}</span>
         </div>
-        <div style="font-size: 0.9rem; margin-bottom: 0.35rem;"><strong>Target Repository:</strong> ${taskObj.target_repo || 'N/A'}</div>
-        <div style="font-size: 0.9rem;"><strong>Outcome:</strong> ${taskObj.outcome || 'Success'}</div>
+        <div style="font-size: 0.9rem; margin-bottom: 0.35rem;"><strong>Target Repository:</strong> ${escapeHtml(taskObj.target_repo || 'N/A')}</div>
+        <div style="font-size: 0.9rem;"><strong>Outcome:</strong> ${escapeHtml(taskObj.outcome || 'Success')}</div>
       `;
       document.getElementById('modal-task-json').textContent = JSON.stringify(taskObj, null, 2);
       document.getElementById('task-modal').classList.add('open');
@@ -1873,17 +1892,18 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
 
     const renderRow = (t) => {
-      const timeDisplay = t.completed_at ? t.completed_at.split(' ')[1] : (t.started_at ? t.started_at.split(' ')[1] : '--:--:--');
-      const repoStr = t.target_repo && t.target_repo !== 'N/A' ? `[${t.target_repo}] ` : '';
-      const safeJSON = JSON.stringify(t).replace(/"/g, '&quot;');
+      const rawTime = t.completed_at || t.started_at || '';
+      const timeDisplay = rawTime && rawTime.includes(' ') ? rawTime.split(' ')[1] : (rawTime || '--:--:--');
+      const repoStr = t.target_repo && t.target_repo !== 'N/A' ? `[${escapeHtml(t.target_repo)}] ` : '';
+      const taskId = escapeHtml(t.id || '');
       return `
-        <tr role="button" tabindex="0" onclick='inspectTask(${JSON.stringify(t)})' onkeydown='if(event.key==="Enter"||event.key===" "){event.preventDefault();inspectTask(${safeJSON});}'>
-          <td class="task-id-cell">${t.id}</td>
-          <td><span class="cat-badge">${t.category}</span></td>
-          <td><strong>${repoStr}</strong>${t.title}</td>
-          <td><div class="status-cell"><span>●</span> ${t.status}</div></td>
-          <td class="time-cell">${timeDisplay}</td>
-          <td style="color: var(--text-muted); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${t.outcome || 'Finished'}</td>
+        <tr role="button" tabindex="0" data-task-id="${taskId}" onclick='inspectTaskById(this.getAttribute("data-task-id"))' onkeydown='if(event.key==="Enter"||event.key===" "){event.preventDefault();inspectTaskById(this.getAttribute("data-task-id"));}'>
+          <td class="task-id-cell">${taskId}</td>
+          <td><span class="cat-badge">${escapeHtml(t.category)}</span></td>
+          <td><strong>${repoStr}</strong>${escapeHtml(t.title)}</td>
+          <td><div class="status-cell"><span>●</span> ${escapeHtml(t.status)}</div></td>
+          <td class="time-cell">${escapeHtml(timeDisplay)}</td>
+          <td style="color: var(--text-muted); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(t.outcome || 'Finished')}</td>
           <td style="text-align: right;"><span class="arrow-btn">&rsaquo;</span></td>
         </tr>
       `;
@@ -1973,7 +1993,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         document.getElementById('card-ai-sub').textContent = data.model_display_name || data.ai_mode || 'Antigravity Heuristic Engine';
         const badgeEl = document.getElementById('card-ai-badge');
         if (badgeEl) {
-          badgeEl.textContent = activeModelName.includes('3.8') ? 'v3.8' : (activeModelName.includes('3.7') ? 'v3.7' : 'v2.5');
+          const versionMatch = activeModelName.match(/(\\d+\\.\\d+)/);
+          if (activeModelName.includes('SONNET')) badgeEl.textContent = 'Sonnet';
+          else if (activeModelName.includes('OPUS')) badgeEl.textContent = 'Opus';
+          else if (activeModelName.includes('GPT-OSS') || activeModelName.includes('120B')) badgeEl.textContent = '120B';
+          else if (versionMatch) badgeEl.textContent = 'v' + versionMatch[1];
+          else badgeEl.textContent = 'AI';
         }
 
         // Operational Mode
@@ -2025,6 +2050,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         // Render Tasks Tables
         const tasks = data.tasks || [];
+        taskById = {};
+        tasks.forEach((task) => { if (task && task.id) taskById[task.id] = task; });
         const tbody1 = document.getElementById('tasks-tbody');
         if (tasks.length === 0) {
           const emptyRow = '<tr><td colspan="7" style="text-align: center; color: var(--text-dim); padding: 2rem;">No active or completed tasks recorded yet.</td></tr>';
@@ -2111,8 +2138,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           const logBox = document.getElementById('log-terminal-box');
           if (logBox) {
             logBox.innerHTML = data.recent_events.map(ev => {
-              const typeClass = `log-type-${(ev.type || 'system').toLowerCase()}`;
-              return `<div class="log-line"><span class="log-time">[${ev.timestamp}]</span> <span class="${typeClass}">[${ev.type}]</span> ${ev.description}</div>`;
+              const rawType = String(ev.type || 'system').toLowerCase().replace(/[^a-z]/g, '') || 'system';
+              const typeClass = `log-type-${rawType}`;
+              return `<div class="log-line"><span class="log-time">[${escapeHtml(ev.timestamp)}]</span> <span class="${escapeHtml(typeClass)}">[${escapeHtml(ev.type)}]</span> ${escapeHtml(ev.description)}</div>`;
             }).join('');
           }
         }
@@ -2130,11 +2158,43 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 """
 
 
+ALLOWED_MODELS = frozenset({
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.1-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "claude-sonnet-4.6",
+    "claude-opus-4.6",
+    "gpt-oss-120b",
+})
+
+MAX_SETTINGS_BYTES = 64 * 1024
+
+
 class DashboardHTTPHandler(http.server.BaseHTTPRequestHandler):
     """Custom HTTP handler serving JSON telemetry API and the ultra-premium Web UI."""
 
+    server_version = "GitHubAgent/1.0"
+
     def log_message(self, format, *args):
         pass
+
+    def _read_json_body(self) -> dict:
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except (ValueError, TypeError):
+            return {}
+        if length <= 0:
+            return {}
+        if length > MAX_SETTINGS_BYTES:
+            return {}
+        try:
+            raw = self.rfile.read(length)
+            return json.loads(raw.decode("utf-8"))
+        except Exception:
+            return {}
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -2148,8 +2208,7 @@ class DashboardHTTPHandler(http.server.BaseHTTPRequestHandler):
             self._send_json({"dry_run": config.dry_run, "status": "ok"})
         elif parsed.path == "/api/settings":
             try:
-                length = int(self.headers.get("Content-Length", 0))
-                payload = json.loads(self.rfile.read(length).decode("utf-8")) if length > 0 else {}
+                payload = self._read_json_body()
                 model = payload.get("model_name")
                 dry_run = payload.get("dry_run")
                 inbox_int = payload.get("inbox_poll_interval")
@@ -2157,18 +2216,32 @@ class DashboardHTTPHandler(http.server.BaseHTTPRequestHandler):
 
                 updates = []
                 if model:
-                    config.model_name = str(model)
-                    status_tracker.active_model = str(model)
-                    updates.append(f"model={model}")
+                    model_str = str(model).strip()[:64]
+                    if model_str not in ALLOWED_MODELS:
+                        self._send_json({"status": "error", "error": f"Unsupported model: {model_str}"})
+                        return
+                    config.model_name = model_str
+                    status_tracker.active_model = model_str
+                    updates.append(f"model={model_str}")
                 if dry_run is not None:
                     config.dry_run = bool(dry_run)
                     status_tracker.config.dry_run = config.dry_run
                     updates.append(f"dry_run={config.dry_run}")
-                if inbox_int:
-                    config.inbox_poll_interval = max(10, int(inbox_int))
+                if inbox_int is not None:
+                    try:
+                        inbox_val = max(10, min(int(inbox_int), 3600))
+                    except (ValueError, TypeError):
+                        self._send_json({"status": "error", "error": "Invalid inbox_poll_interval"})
+                        return
+                    config.inbox_poll_interval = inbox_val
                     updates.append(f"inbox_int={config.inbox_poll_interval}s")
-                if hunt_int:
-                    config.issue_hunt_interval = max(30, int(hunt_int))
+                if hunt_int is not None:
+                    try:
+                        hunt_val = max(30, min(int(hunt_int), 7200))
+                    except (ValueError, TypeError):
+                        self._send_json({"status": "error", "error": "Invalid issue_hunt_interval"})
+                        return
+                    config.issue_hunt_interval = hunt_val
                     updates.append(f"hunt_int={config.issue_hunt_interval}s")
 
                 status_tracker.save()
@@ -2184,29 +2257,42 @@ class DashboardHTTPHandler(http.server.BaseHTTPRequestHandler):
             self._send_json({"status": "triggered"})
         else:
             self.send_response(404)
+            self.send_header("Content-Length", "0")
             self.end_headers()
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/status":
-            status_tracker._load()
-            task_tracker._load()
+            try:
+                status_tracker._load()
+            except Exception:
+                pass
+            try:
+                task_tracker._load()
+            except Exception:
+                pass
             snapshot = status_tracker.get_snapshot()
             snapshot["tasks"] = task_tracker.get_all_tasks()
             self._send_json(snapshot)
-        else:
+        elif parsed.path in ("/", "/index.html"):
             content = HTML_TEMPLATE.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(content)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src data: https:; connect-src 'self'")
             self.end_headers()
             self.wfile.write(content)
+        else:
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
     def _send_json(self, data: dict):
         body = json.dumps(data).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -2214,9 +2300,10 @@ class DashboardHTTPHandler(http.server.BaseHTTPRequestHandler):
 
 def start_web_server(port: int = 3000):
     """Start local web server on specified port in a daemon thread."""
-    socketserver.TCPServer.allow_reuse_address = True
+    socketserver.ThreadingTCPServer.allow_reuse_address = True
+    socketserver.ThreadingTCPServer.daemon_threads = True
     try:
-        httpd = socketserver.TCPServer(("127.0.0.1", port), DashboardHTTPHandler)
+        httpd = socketserver.ThreadingTCPServer(("127.0.0.1", port), DashboardHTTPHandler)
         logger.info(f"Live Web Dashboard listening at http://localhost:{port}")
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)
         thread.start()

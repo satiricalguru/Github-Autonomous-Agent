@@ -1,22 +1,8 @@
 """Tests for web dashboard endpoints, dynamic model detection, and responsive telemetry."""
 
-import json
-import pytest
 from src.config import config, detect_active_ai_model
 from src.status_tracker import status_tracker
-from src.web_dashboard import DashboardHTTPHandler
-
-
-class DummyRequest:
-    def __init__(self, body: bytes):
-        self.body = body
-
-    def read(self, length: int):
-        return self.body[:length]
-
-
-class DummyServer:
-    pass
+from src.web_dashboard import ALLOWED_MODELS
 
 
 class TestWebDashboard:
@@ -42,3 +28,21 @@ class TestWebDashboard:
         assert config.inbox_poll_interval == 45
         # Restore
         config.update(inbox_poll_interval=old_interval)
+
+    def test_settings_model_allowlist(self):
+        """Settings endpoint must only accept known model identifiers."""
+        assert "gemini-3.8-flash" in ALLOWED_MODELS
+        assert "claude-sonnet-4.6" in ALLOWED_MODELS
+        assert "gpt-oss-120b" in ALLOWED_MODELS
+        assert "evil-model;rm -rf" not in ALLOWED_MODELS
+
+    def test_rate_limit_tracking(self):
+        """Status tracker records live quota instead of hardcoded 5000."""
+        old_rem, old_lim = status_tracker.rate_limit_remaining, status_tracker.rate_limit_limit
+        status_tracker.set_rate_limit(1234, 5000)
+        try:
+            snapshot = status_tracker.get_snapshot()
+            assert snapshot["rate_limit_remaining"] == 1234
+            assert snapshot["rate_limit_limit"] == 5000
+        finally:
+            status_tracker.set_rate_limit(old_rem, old_lim)
