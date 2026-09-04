@@ -44,13 +44,13 @@ It operates continuously in the background across two concurrent execution loops
 
 ```
                   ┌─────────────────────────────────────────────────────────┐
-                  │          🚀 Autonomous GitHub Agent Orchestrator         │
+                  │          Autonomous GitHub Agent Orchestrator           │
                   └────────────────────────────┬────────────────────────────┘
                                                │
                        ┌───────────────────────┴───────────────────────┐
                        ▼                                               ▼
          ┌───────────────────────────┐                   ┌───────────────────────────┐
-         │ 📥 Inbox & Mention Engine │                   │ 🔍 Issue Hunter & Solver  │
+         │  Inbox & Mention Engine   │                   │   Issue Hunter & Solver   │
          ├───────────────────────────┤                   ├───────────────────────────┤
          │ • Polling notifications   │                   │ • Top-tier repo discovery │
          │ • Actionability scoring   │                   │ • Sandboxed git clones    │
@@ -88,19 +88,23 @@ It operates continuously in the background across two concurrent execution loops
 
 The agent includes a built-in, zero-dependency real-time reactive Web UI accessible at `http://localhost:3000`.
 
-```
-╭──────────────────────────────────────────────────────────────────────────────╮
-│  🤖 ACTIVE AI MODEL        GITHUB ACCOUNT         OPERATIONAL MODE           │
-│  GEMINI-3.7-FLASH [LATEST] @satiricalguru [VERIFIED] DRY-RUN (Safe) [SHIELD] │
-├──────────────────────────────────────────────────────────────────────────────┤
-│  ⚡ REAL-TIME AUTONOMOUS WORKERS                                             │
-│  • [Inbox Manager]         ● POLLING (60s)  | Activity: Triaging thread #84  │
-│  • [Issue Hunter & Solver] ● HUNTING (300s) | Activity: Searching Python bugs│
-├──────────────────────────────────────────────────────────────────────────────┤
-│  📋 LIVE TASK STREAM                                                         │
-│  TASK-00101 | INBOX  | [satiricalguru/Forge] CI Check Failure  | ✓ COMPLETED │
-│  TASK-00102 | SOLVER | [tiangolo/fastapi] Fix typing recursion | ✓ COMPLETED │
-╰──────────────────────────────────────────────────────────────────────────────╯
+```text
+================================================================================
+  AUTONOMOUS GITHUB AGENT - LIVE TELEMETRY & WORKER STATUS
+================================================================================
+  Active Model    : Gemini 3.8 Flash (High Reasoning)
+  GitHub Account  : @satiricalguru [Verified]
+  Operating Mode  : DRY-RUN (Safe Simulation)
+  Web Telemetry   : http://localhost:3000
+
+  [AUTONOMOUS WORKERS]
+  • Inbox Manager         [POLLING: 60s]  Triaging notification threads
+  • Issue Hunter & Solver [HUNTING: 300s] Searching Python bugs (stars:>=1000)
+
+  [LIVE TASK STREAM]
+  • TASK-00101  INBOX   satiricalguru/Forge    CI Check Failure   [COMPLETED]
+  • TASK-00102  SOLVER  tiangolo/fastapi       Fix recursion bug  [COMPLETED]
+================================================================================
 ```
 
 ---
