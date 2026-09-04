@@ -1,11 +1,14 @@
 <div align="center">
 
 <a href="https://github.com/satiricalguru/Github-Agent" target="_blank" rel="noopener noreferrer">
-  <img src="https://api.iconify.design/simple-icons:github.svg?color=%23181717#gh-light-mode-only" width="72" height="72" alt="GitHub Logo" />
-  <img src="https://api.iconify.design/simple-icons:github.svg?color=%23ffffff#gh-dark-mode-only" width="72" height="72" alt="GitHub Logo" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.iconify.design/simple-icons:github.svg?color=%23ffffff">
+    <source media="(prefers-color-scheme: light)" srcset="https://api.iconify.design/simple-icons:github.svg?color=%23181717">
+    <img src="https://api.iconify.design/simple-icons:github.svg?color=%23181717" width="72" height="72" alt="GitHub Logo" />
+  </picture>
 </a>
 
-# 🤖 Autonomous GitHub Agent
+# Autonomous GitHub Agent
 ### High-Performance Multi-Task AI Agent for Continuous Inbox Triage, Open-Source Issue Hunting & Verified PR Resolution
 
 [![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.14-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
