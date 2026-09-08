@@ -137,6 +137,42 @@ class TestInboxHunter(unittest.IsolatedAsyncioTestCase):
                 # Must not raise KeyError: 'language'
                 await cmd_hunt(limit=1)
 
+    async def test_inbox_manager_engages_read_discussion(self):
+        """Verify that process_inbox triages read discussions and calls post_discussion_comment."""
+        mock_client = MagicMock()
+        # Unread notifications is empty
+        mock_client.get_notifications = AsyncMock(
+            side_effect=lambda all_notifications=False: [] if not all_notifications else [
+                {
+                    "id": "thread-disc-202",
+                    "repository": {"full_name": "community/community"},
+                    "reason": "comment",
+                    "subject": {
+                        "title": "Scheduled GitHub Actions workflow not triggering",
+                        "type": "Discussion",
+                        "url": "https://api.github.com/repos/community/community/discussions/206028",
+                    },
+                }
+            ]
+        )
+        mock_client.get_discussion = AsyncMock(return_value={"id": 123, "node_id": "D_kwDO123"})
+        mock_client.get_discussion_comments = AsyncMock(return_value=[{"user": {"login": "someone_else"}, "body": "Same issue here"}])
+        mock_client.post_discussion_comment = AsyncMock(return_value={"id": 999, "body": "Thanks for bringing this up"})
+        mock_client.mark_notification_read = AsyncMock(return_value=True)
+        mock_client.mark_notification_done = AsyncMock(return_value=True)
+
+        inbox = InboxManager(
+            client=mock_client,
+            safety=self.safety,
+            agent_config=self.cfg,
+            status=self.status,
+            tasks=self.tasks,
+        )
+        results = await inbox.process_inbox()
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["action"], "replied (discussion)")
+        mock_client.post_discussion_comment.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

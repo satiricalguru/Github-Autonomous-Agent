@@ -69,6 +69,8 @@ class StatusTracker:
                     self.rate_limit_remaining = data["rate_limit_remaining"]
                 if isinstance(data.get("rate_limit_limit"), int):
                     self.rate_limit_limit = data["rate_limit_limit"]
+                if "dry_run" in data:
+                    self.config.dry_run = bool(data["dry_run"])
         except Exception:
             pass
 

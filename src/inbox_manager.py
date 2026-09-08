@@ -51,17 +51,35 @@ class InboxManager:
         self.tasks = tasks if tasks is not None else task_tracker
 
     async def process_inbox(self) -> List[Dict[str, Any]]:
-        """Fetch and process all unread GitHub notifications."""
+        """Fetch and process GitHub notifications, including unread and read discussions."""
         results = []
-        self.status.update_inbox("POLLING", "Fetching unread notifications from GitHub...")
+        self.status.update_inbox("POLLING", "Fetching notifications from GitHub...")
         notifications = await self.client.get_notifications(all_notifications=False)
+        notifications = list(notifications or [])
+
+        # Also inspect read/all notifications for discussions to engage if configured
+        if getattr(self.config, "check_read_discussions", True):
+            try:
+                all_notifs = await self.client.get_notifications(all_notifications=True)
+                unread_ids = {str(n.get("id", "")) for n in notifications}
+                for n in (all_notifs or []):
+                    nid = str(n.get("id", ""))
+                    if nid and nid not in unread_ids:
+                        subj = n.get("subject", {}) or {}
+                        stype = subj.get("type", "")
+                        surl = subj.get("url", "") or ""
+                        if stype == "Discussion" or "/discussions/" in surl:
+                            if not self.safety.state.is_notification_handled(nid):
+                                notifications.append(n)
+            except Exception as e:
+                logger.warning(f"Failed fetching read discussions: {e}")
 
         if not notifications:
-            logger.info("Inbox clean: No unread notifications.")
-            self.status.update_inbox("IDLE", "Inbox clean (0 unread notifications)")
+            logger.info("Inbox clean: No pending notifications or discussions.")
+            self.status.update_inbox("IDLE", "Inbox clean (0 pending notifications)")
             return []
 
-        logger.info(f"Found {len(notifications)} unread notification(s). Processing...")
+        logger.info(f"Found {len(notifications)} notification(s) to triage. Processing...")
         self.status.update_inbox("PROCESSING", f"Triaging {len(notifications)} notification(s)...")
 
         for notif in notifications:
@@ -82,46 +100,72 @@ class InboxManager:
             self.status.update_inbox("TRIAGING", f"Evaluating [{repo_name}] {subject_title[:30]}...")
             logger.info(f"Triage: [{repo_name}] {subject_type} - {subject_title} (Reason: {reason})")
 
-            # Fetch issue/PR context if available
+            # Fetch issue/PR or discussion context
             comments = []
             issue_number = None
-            if subject_url and isinstance(subject_url, str) and ("/issues/" in subject_url or "/pulls/" in subject_url):
+            discussion_number = None
+            discussion_node_id = None
+            is_discussion = (subject_type == "Discussion") or (isinstance(subject_url, str) and "/discussions/" in subject_url)
+
+            if subject_url and isinstance(subject_url, str):
                 try:
-                    parts = subject_url.rstrip("/").split("/")
-                    issue_number = int(parts[-1])
-                    resource_data = await self.client.get_resource_by_url(subject_url)
-                    if resource_data and "comments_url" in resource_data:
-                        comments = await self.client.get_issue_comments(
-                            resource_data["comments_url"]
-                        )
+                    parts = [p for p in subject_url.rstrip("/").split("/") if p]
+                    if parts and parts[-1].isdigit():
+                        num = int(parts[-1])
+                        if "/issues/" in subject_url or "/pulls/" in subject_url:
+                            issue_number = num
+                            resource_data = await self.client.get_resource_by_url(subject_url)
+                            if resource_data and "comments_url" in resource_data:
+                                comments = await self.client.get_issue_comments(
+                                    resource_data["comments_url"]
+                                )
+                        elif is_discussion and "/" in repo_name:
+                            discussion_number = num
+                            owner, repo = repo_name.split("/", 1)
+                            disc_data = await self.client.get_discussion(owner, repo, discussion_number)
+                            if disc_data:
+                                discussion_node_id = disc_data.get("node_id")
+                            comments = await self.client.get_discussion_comments(owner, repo, discussion_number)
                 except Exception as e:
-                    logger.warning(f"Could not load comments for {subject_url}: {e}")
+                    logger.warning(f"Could not load resource context for {subject_url}: {e}")
 
             # AI Evaluation
             evaluation = await self.ai.evaluate_notification(
                 repo=repo_name,
                 title=subject_title,
                 reason=reason,
-                subject_type=subject_type,
+                subject_type="Discussion" if is_discussion else subject_type,
                 last_comments=comments,
             )
 
             action_taken = "reviewed"
             reply_text = evaluation.get("suggested_reply", "")
 
-            if evaluation.get("should_respond") and reply_text and issue_number:
+            if evaluation.get("should_respond") and reply_text:
                 # Sanitize and check safety
                 sanitized_reply = self.safety.sanitize_comment(reply_text)
                 is_safe, reason_msg = self.safety.validate_content_safety(sanitized_reply)
 
                 if is_safe and "/" in repo_name:
                     owner, repo = repo_name.split("/", 1)
-                    logger.info(f"Replying to {repo_name}#{issue_number}: {sanitized_reply}")
-                    post_res = await self.client.post_issue_comment(
-                        owner=owner, repo=repo, issue_number=issue_number, body=sanitized_reply
-                    )
-                    if post_res:
-                        action_taken = "replied"
+                    if issue_number is not None:
+                        logger.info(f"Replying to issue/PR {repo_name}#{issue_number}: {sanitized_reply}")
+                        post_res = await self.client.post_issue_comment(
+                            owner=owner, repo=repo, issue_number=issue_number, body=sanitized_reply
+                        )
+                        if post_res:
+                            action_taken = "replied"
+                    elif is_discussion and discussion_number is not None:
+                        logger.info(f"Replying to discussion {repo_name}#{discussion_number}: {sanitized_reply}")
+                        post_res = await self.client.post_discussion_comment(
+                            owner=owner,
+                            repo=repo,
+                            discussion_number=discussion_number,
+                            body=sanitized_reply,
+                            discussion_node_id=discussion_node_id,
+                        )
+                        if post_res:
+                            action_taken = "replied (discussion)"
                 elif not is_safe:
                     logger.warning(f"Reply rejected by safety guardrail: {reason_msg}")
 

@@ -6,6 +6,7 @@ import logging
 import shutil
 import subprocess
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from urllib.parse import urlencode
 import httpx
 
 if TYPE_CHECKING:
@@ -107,8 +108,13 @@ class GitHubClient:
         self, method: str, endpoint: str, **kwargs
     ) -> httpx.Response:
         if self._has_gh:
+            ep = endpoint
+            params = kwargs.get("params")
+            if params:
+                sep = "&" if "?" in ep else "?"
+                ep = f"{ep}{sep}{urlencode(params)}"
             cli_data = await self._run_gh_api(
-                endpoint=endpoint, method=method, body=kwargs.get("json")
+                endpoint=ep, method=method, body=kwargs.get("json")
             )
             if cli_data is not None:
                 content = json.dumps(cli_data).encode("utf-8")
@@ -261,6 +267,78 @@ class GitHubClient:
 
         res = await self._request("POST", endpoint, json={"body": body})
         if res.status_code == 201:
+            return res.json()
+        return None
+
+    async def get_discussion(self, owner: str, repo: str, discussion_number: int) -> Optional[Dict[str, Any]]:
+        """Fetch details for a specific repository discussion."""
+        endpoint = f"/repos/{owner}/{repo}/discussions/{discussion_number}"
+        if self._has_gh:
+            data = await self._run_gh_api(endpoint)
+            if data and isinstance(data, dict):
+                return data
+
+        res = await self._request("GET", endpoint)
+        if res.status_code == 200:
+            return res.json()
+        return None
+
+    async def get_discussion_comments(
+        self, owner: str, repo: str, discussion_number: int
+    ) -> List[Dict[str, Any]]:
+        """Fetch comments for a repository discussion."""
+        endpoint = f"/repos/{owner}/{repo}/discussions/{discussion_number}/comments"
+        if self._has_gh:
+            data = await self._run_gh_api(endpoint)
+            if data and isinstance(data, list):
+                return data
+
+        res = await self._request("GET", endpoint)
+        if res.status_code == 200:
+            return res.json()
+        return []
+
+    async def post_discussion_comment(
+        self,
+        owner: str,
+        repo: str,
+        discussion_number: int,
+        body: str,
+        discussion_node_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Post a reply comment to a GitHub discussion."""
+        if self.config.dry_run:
+            logger.info(
+                f"[DRY-RUN] Would post discussion comment to {owner}/{repo}/discussions/{discussion_number}:\n{body}"
+            )
+            return {"id": 999998, "body": body, "dry_run": True}
+
+        endpoint = f"/repos/{owner}/{repo}/discussions/{discussion_number}/comments"
+        if self._has_gh:
+            data = await self._run_gh_api(endpoint, method="POST", body={"body": body})
+            if data and isinstance(data, dict):
+                return data
+
+            if discussion_node_id:
+                mutation = "mutation($discussionId: ID!, $body: String!) { addDiscussionComment(input: {discussionId: $discussionId, body: $body}) { comment { id url } } }"
+                gql_cmd = [
+                    "gh", "api", "graphql",
+                    "-F", f"discussionId={discussion_node_id}",
+                    "-F", f"body={body}",
+                    "-f", f"query={mutation}",
+                ]
+                res = await self._run_command(gql_cmd, timeout=20.0)
+                if res and res[0] == 0 and res[1]:
+                    try:
+                        parsed = json.loads(res[1])
+                        comment_data = parsed.get("data", {}).get("addDiscussionComment", {}).get("comment", {})
+                        if comment_data:
+                            return comment_data
+                    except Exception:
+                        pass
+
+        res = await self._request("POST", endpoint, json={"body": body})
+        if res.status_code in (200, 201):
             return res.json()
         return None
 

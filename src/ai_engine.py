@@ -76,7 +76,7 @@ class AIEngine:
 
         model = sanitize_model_name(self.config.model_name or "gemini-3.8-flash")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={self.api_key}"
-        payload = {
+        payload: Dict[str, Any] = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0.2, "maxOutputTokens": 2048},
         }
@@ -143,16 +143,45 @@ Return JSON format only:
             if parsed and isinstance(parsed, dict):
                 return parsed
 
+        # Check if user already responded as the latest commenter
+        last_comment_user = ""
+        if last_comments:
+            last_comment_user = str(last_comments[-1].get("user", {}).get("login", "")).strip().lower()
+        my_user = str(self.config.github_username or "").strip().lower()
+        if my_user and last_comment_user == my_user:
+            return {
+                "should_respond": False,
+                "confidence": 0.9,
+                "rationale": "User already posted the latest comment on this thread.",
+                "suggested_reply": "",
+            }
+
         # Fallback heuristic if API key is not configured
-        needs_reply = reason in ("mention", "review_requested", "assign") or "question" in title.lower()
-        return {
-            "should_respond": needs_reply,
-            "confidence": 0.7,
-            "rationale": f"Heuristic based on notification reason: {reason}",
-            "suggested_reply": (
+        is_discussion = (subject_type == "Discussion")
+        needs_reply = (
+            reason in ("mention", "review_requested", "assign")
+            or "question" in title.lower()
+            or (is_discussion and getattr(self.config, "engage_discussions", True))
+        )
+        if is_discussion:
+            reply_body = (
+                f"Thanks for bringing this up in **{title}**. "
+                "I am following this discussion and looking into the details. "
+                "Happy to help test or contribute to this area!"
+            )
+            rationale = "Active community discussion engagement."
+        else:
+            reply_body = (
                 f"Thanks for tagging me on [{repo}] {title}. "
                 "I am looking into this and will follow up shortly."
-            ),
+            )
+            rationale = f"Heuristic based on notification reason: {reason}"
+
+        return {
+            "should_respond": needs_reply,
+            "confidence": 0.8 if is_discussion else 0.7,
+            "rationale": rationale,
+            "suggested_reply": reply_body,
         }
 
     async def analyze_issue_actionability(

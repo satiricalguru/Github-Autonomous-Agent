@@ -190,6 +190,14 @@ class AgentConfig(BaseModel):
         default_factory=lambda: os.getenv("AUTO_TEST_VERIFICATION", "true").lower()
         in ("true", "1", "yes")
     )
+    check_read_discussions: bool = Field(
+        default_factory=lambda: os.getenv("CHECK_READ_DISCUSSIONS", "true").lower()
+        in ("true", "1", "yes")
+    )
+    engage_discussions: bool = Field(
+        default_factory=lambda: os.getenv("ENGAGE_DISCUSSIONS", "true").lower()
+        in ("true", "1", "yes")
+    )
 
     # Concurrency & Intervals (seconds)
     inbox_poll_interval: int = Field(
