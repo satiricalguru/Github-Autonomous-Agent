@@ -25,3 +25,7 @@ htmlcov/
 .DS_Store
 .AppleDouble
 .LSOverride
+
+# Node & Frontend
+node_modules/
+*.log

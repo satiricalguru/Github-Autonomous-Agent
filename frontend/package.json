@@ -1,0 +1,13 @@
+{
+  "name": "autonomous-github-agent-dashboard",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Interactive, premium mission control dashboard for Autonomous GitHub Agent",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}

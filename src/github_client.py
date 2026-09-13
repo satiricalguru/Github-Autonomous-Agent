@@ -95,11 +95,13 @@ class GitHubClient:
         res = await self._run_command(cmd, input_data=input_data, timeout=20.0)
         if res is not None:
             returncode, stdout, stderr = res
-            if returncode == 0 and stdout:
-                try:
-                    return json.loads(stdout)
-                except Exception:
-                    return stdout.strip()
+            if returncode == 0:
+                if stdout:
+                    try:
+                        return json.loads(stdout)
+                    except Exception:
+                        return stdout.strip()
+                return {}
             elif returncode != 0:
                 logger.warning(f"gh api error on {endpoint}: {stderr.strip()}")
         return None
@@ -210,18 +212,17 @@ class GitHubClient:
         return res.status_code in (200, 202, 205)
 
     async def mark_notification_done(self, thread_id: str) -> bool:
-        """Mark a notification thread as done.
-
-        The notifications API has no DELETE endpoint for threads; marking
-        read via PATCH is the supported operation. This method therefore
-        marks the thread read (archiving it from the inbox view) and reports
-        the real outcome instead of optimistically returning True.
-        """
+        """Mark a notification thread as done (archives from GitHub notifications inbox)."""
         if self.config.dry_run:
             logger.info(f"[DRY-RUN] Mark notification {thread_id} as done.")
             return True
 
-        return await self.mark_notification_read(thread_id)
+        if self._has_gh:
+            res = await self._run_gh_api(f"/notifications/threads/{thread_id}", method="DELETE")
+            return res is not None
+
+        res = await self._request("DELETE", f"/notifications/threads/{thread_id}")
+        return res.status_code in (200, 204, 205)
 
     async def get_resource_by_url(self, url: str) -> Optional[Dict[str, Any]]:
         """Fetch resource by API URL or endpoint."""

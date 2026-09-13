@@ -205,3 +205,36 @@ class InboxManager:
 
         self.status.update_inbox("IDLE", "Inbox triage completed", handled_count=len(self.safety.state.handled_notifications))
         return results
+
+    async def mark_all_completed_done(self) -> int:
+        """Mark all handled notifications and completed tasks as Done in GitHub inbox."""
+        done_count = 0
+        marked_threads = set()
+
+        # 1. Mark all thread IDs stored in safety state as done
+        for thread_id in list(self.safety.state.handled_notifications):
+            if thread_id and thread_id not in marked_threads:
+                try:
+                    success = await self.client.mark_notification_done(str(thread_id))
+                    if success:
+                        done_count += 1
+                        marked_threads.add(thread_id)
+                except Exception as e:
+                    logger.debug(f"Failed marking thread {thread_id} done: {e}")
+
+        # 2. Also inspect any active notifications returned by GitHub API
+        try:
+            notifications = await self.client.get_notifications(all_notifications=True)
+            for notif in (notifications or []):
+                thread_id = str(notif.get("id", ""))
+                if thread_id and thread_id not in marked_threads:
+                    await self.client.mark_notification_read(thread_id)
+                    success = await self.client.mark_notification_done(thread_id)
+                    if success:
+                        self.safety.state.mark_notification_handled(thread_id)
+                        done_count += 1
+                        marked_threads.add(thread_id)
+        except Exception as e:
+            logger.warning(f"Error fetching/marking notifications as done: {e}")
+
+        return done_count

@@ -78,14 +78,20 @@ def cmd_web(port: int = 3000):
         console.print(f"[bold red]Could not start web dashboard on port {port} (already in use?).[/bold red]")
 
 
-async def cmd_inbox(dry_run: Optional[bool] = None):
-    """Run a single pass of inbox triage."""
+async def cmd_inbox(dry_run: Optional[bool] = None, mark_done: bool = False):
+    """Run a single pass of inbox triage or mark completed items as done."""
     if dry_run is not None:
         config.dry_run = dry_run
 
-    console.print(f"[bold cyan]Running Inbox Triage (Mode: {'DRY-RUN' if config.dry_run else 'LIVE'})...[/bold cyan]")
     async with GitHubClient(config) as client:
         inbox = InboxManager(client=client, agent_config=config)
+        if mark_done:
+            console.print(f"[bold cyan]Marking all completed/handled notifications as Done in GitHub Inbox (Mode: {'DRY-RUN' if config.dry_run else 'LIVE'})...[/bold cyan]")
+            count = await inbox.mark_all_completed_done()
+            console.print(f"[bold green]✓ Successfully marked {count} notification(s) as Done in GitHub Inbox.[/bold green]")
+            return
+
+        console.print(f"[bold cyan]Running Inbox Triage (Mode: {'DRY-RUN' if config.dry_run else 'LIVE'})...[/bold cyan]")
         results = await inbox.process_inbox()
 
         if not results:
@@ -231,6 +237,7 @@ def main():
     inbox_parser = subparsers.add_parser("inbox", help="Run a single pass of inbox triage")
     inbox_parser.add_argument("--dry-run", action="store_true", help="Simulate replies only")
     inbox_parser.add_argument("--live", action="store_true", help="Submit real replies")
+    inbox_parser.add_argument("--mark-done", action="store_true", help="Mark all completed/handled items as done in GitHub inbox")
 
     # Hunt command
     hunt_parser = subparsers.add_parser("hunt", help="Search top-tier repos for open issues")
@@ -256,7 +263,7 @@ def main():
     elif args.command == "web":
         cmd_web(port=args.port)
     elif args.command == "inbox":
-        asyncio.run(cmd_inbox(dry_run=_resolve_dry_run(args)))
+        asyncio.run(cmd_inbox(dry_run=_resolve_dry_run(args), mark_done=getattr(args, "mark_done", False)))
     elif args.command == "hunt":
         asyncio.run(cmd_hunt(limit=max(1, min(args.limit, 50))))
     elif args.command == "solve":
