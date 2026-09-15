@@ -71,8 +71,9 @@ def detect_active_ai_model() -> str:
         return env_model
 
     conv_id = os.getenv("ANTIGRAVITY_CONVERSATION_ID")
+    transcript = None
     if conv_id and len(conv_id) < 256 and "/" not in conv_id and "\\" not in conv_id:
-        transcript = (
+        cand = (
             Path.home()
             / ".gemini"
             / "antigravity-ide"
@@ -82,42 +83,57 @@ def detect_active_ai_model() -> str:
             / "logs"
             / "transcript.jsonl"
         )
-        if transcript.exists():
-            try:
-                import re
+        if cand.exists():
+            transcript = cand
 
-                # Cap transcript scan to avoid pathological I/O on huge files.
-                max_lines = 500
-                with open(transcript, "r", encoding="utf-8") as f:
-                    for idx, line in enumerate(f):
-                        if idx >= max_lines or len(line) > 20000:
-                            continue
-                        m = re.search(
-                            r"Model Selection\` from \S+ to (.+?)\.\s*No need", line
-                        )
-                        if m:
-                            raw = m.group(1).strip()
-                            if "3.8" in raw:
-                                return "gemini-3.8-flash"
-                            elif "3.7" in raw:
-                                return "gemini-3.7-flash"
-                            elif "3.6" in raw:
-                                return "gemini-3.6-flash"
-                            elif "3.1" in raw and "pro" in raw.lower():
-                                return "gemini-3.1-pro"
-                            elif "sonnet" in raw.lower():
-                                return "claude-sonnet-4.6"
-                            elif "opus" in raw.lower():
-                                return "claude-opus-4.6"
-                            elif "gpt-oss" in raw.lower() or "120b" in raw.lower():
-                                return "gpt-oss-120b"
-                            elif "2.5" in raw and "pro" in raw.lower():
-                                return "gemini-2.5-pro"
-                            elif "2.5" in raw:
-                                return "gemini-2.5-flash"
-                            return raw.lower().replace(" ", "-")
-            except Exception:
-                pass
+    # Fallback: scan brain directory for most recently modified conversation transcript
+    if transcript is None:
+        brain_dir = Path.home() / ".gemini" / "antigravity-ide" / "brain"
+        if brain_dir.exists():
+            candidates = sorted(
+                brain_dir.glob("*/.system_generated/logs/transcript.jsonl"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            if candidates:
+                transcript = candidates[0]
+
+    if transcript and transcript.exists():
+        try:
+            import re
+
+            with open(transcript, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+            # Scan backwards from the latest entries to get the most recent model selection
+            for line in reversed(lines):
+                if len(line) > 50000:
+                    continue
+                m = re.search(r"Model Selection\` from \S+ to (.+?)\.\s*No need", line)
+                if m:
+                    raw = m.group(1).strip()
+                    if "3.8" in raw:
+                        return "gemini-3.8-flash"
+                    elif "3.7" in raw:
+                        return "gemini-3.7-flash"
+                    elif "3.6" in raw:
+                        return "gemini-3.6-flash"
+                    elif "3.1" in raw and "pro" in raw.lower():
+                        return "gemini-3.1-pro"
+                    elif "sonnet" in raw.lower():
+                        return "claude-sonnet-4.6"
+                    elif "opus" in raw.lower():
+                        return "claude-opus-4.6"
+                    elif "gpt-oss" in raw.lower() or "120b" in raw.lower():
+                        return "gpt-oss-120b"
+                    elif "2.5" in raw and "pro" in raw.lower():
+                        return "gemini-2.5-pro"
+                    elif "2.5" in raw:
+                        return "gemini-2.5-flash"
+                    return raw.lower().replace(" ", "-")
+        except Exception:
+            pass
+
     return "gemini-3.8-flash"
 
 

@@ -1,7 +1,7 @@
 """GitHub Inbox & Notification Manager."""
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 from rich.console import Console
 
 if TYPE_CHECKING:
@@ -49,30 +49,31 @@ class InboxManager:
         self.ai = ai or AIEngine(self.config)
         self.status = status if status is not None else status_tracker
         self.tasks = tasks if tasks is not None else task_tracker
+        self._dry_run_handled: Set[str] = set()
 
     async def process_inbox(self) -> List[Dict[str, Any]]:
         """Fetch and process GitHub notifications, including unread and read discussions."""
         results = []
         self.status.update_inbox("POLLING", "Fetching notifications from GitHub...")
-        notifications = await self.client.get_notifications(all_notifications=False)
-        notifications = list(notifications or [])
 
-        # Also inspect read/all notifications for discussions to engage if configured
-        if getattr(self.config, "check_read_discussions", True):
-            try:
-                all_notifs = await self.client.get_notifications(all_notifications=True)
-                unread_ids = {str(n.get("id", "")) for n in notifications}
-                for n in (all_notifs or []):
-                    nid = str(n.get("id", ""))
-                    if nid and nid not in unread_ids:
-                        subj = n.get("subject", {}) or {}
-                        stype = subj.get("type", "")
-                        surl = subj.get("url", "") or ""
-                        if stype == "Discussion" or "/discussions/" in surl:
-                            if not self.safety.state.is_notification_handled(nid):
-                                notifications.append(n)
-            except Exception as e:
-                logger.warning(f"Failed fetching read discussions: {e}")
+        notifications = []
+        try:
+            all_notifs = await self.client.get_notifications(all_notifications=True)
+            for n in (all_notifs or []):
+                nid = str(n.get("id", ""))
+                if not nid:
+                    continue
+                # If in dry-run mode, ignore items handled during this dry-run session
+                if self.config.dry_run and nid in self._dry_run_handled:
+                    continue
+                # If in live mode, ignore items already handled unless still marked unread on GitHub
+                if not self.config.dry_run and self.safety.state.is_notification_handled(nid) and not n.get("unread", False):
+                    continue
+                notifications.append(n)
+        except Exception as e:
+            logger.warning(f"Error fetching notifications: {e}")
+            raw = await self.client.get_notifications(all_notifications=False)
+            notifications = list(raw or [])
 
         if not notifications:
             logger.info("Inbox clean: No pending notifications or discussions.")
@@ -94,7 +95,9 @@ class InboxManager:
             subject_url = subject.get("url", "") or ""
 
             # Check if already processed
-            if self.safety.state.is_notification_handled(thread_id):
+            if self.config.dry_run and thread_id in self._dry_run_handled:
+                continue
+            if not self.config.dry_run and self.safety.state.is_notification_handled(thread_id) and not notif.get("unread", False):
                 continue
 
             self.status.update_inbox("TRIAGING", f"Evaluating [{repo_name}] {subject_title[:30]}...")
@@ -183,7 +186,10 @@ class InboxManager:
                 done_coro = self.client.mark_notification_done(thread_id)
                 if hasattr(done_coro, "__await__"):
                     await done_coro
-            self.safety.state.mark_notification_handled(thread_id)
+            if self.config.dry_run:
+                self._dry_run_handled.add(thread_id)
+            else:
+                self.safety.state.mark_notification_handled(thread_id)
             self.status.log_event("INBOX", f"{action_taken.title()} on [{repo_name}] {subject_title[:40]}")
             self.tasks.complete_task(
                 task_id=task_id,
@@ -215,7 +221,7 @@ class InboxManager:
         for thread_id in list(self.safety.state.handled_notifications):
             if thread_id and thread_id not in marked_threads:
                 try:
-                    success = await self.client.mark_notification_done(str(thread_id))
+                    success = await self.client.mark_notification_done(thread_id)
                     if success:
                         done_count += 1
                         marked_threads.add(thread_id)

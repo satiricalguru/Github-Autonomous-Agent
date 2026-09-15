@@ -1,5 +1,6 @@
 """Issue Hunter: Finds high-signal open issues across top-tier open-source repositories."""
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -57,8 +58,10 @@ class IssueHunter:
                 logger.info(f"Searching issues: {query}")
                 try:
                     items = await self.client.search_issues(query=query, sort="updated", order="desc", per_page=10)
+                    await asyncio.sleep(2.0)
                 except Exception as e:
                     logger.warning(f"Issue search failed for {query}: {e}")
+                    await asyncio.sleep(3.0)
                     continue
 
                 for item in items:

@@ -62,11 +62,29 @@ class AutonomousOrchestrator:
         except asyncio.TimeoutError:
             pass
 
+    def _sync_dynamic_model(self):
+        """Dynamically synchronize AI model name from Antigravity IDE."""
+        try:
+            try:
+                from .config import detect_active_ai_model
+            except ImportError:
+                from config import detect_active_ai_model
+            new_model = detect_active_ai_model()
+            if new_model and new_model != self.config.model_name:
+                self.config.model_name = new_model
+                status_tracker.active_model = new_model
+                status_tracker.model_display_name = self.config.model_display_name
+                status_tracker.save()
+                logger.info(f"Dynamically updated active AI model to: {new_model} ({self.config.model_display_name})")
+        except Exception:
+            pass
+
     async def _inbox_loop(self):
         """Continuous inbox polling loop."""
         logger.info(f"Started Inbox Worker (polling every {self.config.inbox_poll_interval}s)")
         while self._running and not self._stop_event.is_set():
             try:
+                self._sync_dynamic_model()
                 # Check rate limits
                 rate = await self.client.get_rate_limit()
                 remaining = rate.get("remaining", 5000)
@@ -99,6 +117,7 @@ class AutonomousOrchestrator:
         )
         while self._running and not self._stop_event.is_set():
             try:
+                self._sync_dynamic_model()
                 # Check daily PR limit
                 can_pr, reason = self.safety.can_submit_pr()
                 if not can_pr:

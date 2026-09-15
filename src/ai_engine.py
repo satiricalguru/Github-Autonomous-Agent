@@ -147,7 +147,7 @@ Return JSON format only:
         last_comment_user = ""
         if last_comments:
             last_comment_user = str(last_comments[-1].get("user", {}).get("login", "")).strip().lower()
-        my_user = str(self.config.github_username or "").strip().lower()
+        my_user = (self.config.github_username or "").strip().lower()
         if my_user and last_comment_user == my_user:
             return {
                 "should_respond": False,
@@ -253,13 +253,16 @@ Repository Context / Key Files:
 
 Determine:
 1. Is this fixable with a clean minimal patch?
-2. Propose targeted file and patch description.
+2. Propose targeted file and exact code modification.
 
 Return JSON format:
 {{
   "can_fix": boolean,
   "confidence": float,
   "target_file": "relative/path/to/file.ext",
+  "search_content": "exact code snippet from target_file to replace, or empty if creating/overwriting",
+  "replacement_content": "new code snippet to replace search_content with",
+  "file_content": "full file content if creating new file or rewriting small file, else empty",
   "explanation": "concise explanation of bug and fix",
   "patch_description": "summary of patch"
 }}
@@ -273,12 +276,21 @@ Return JSON format:
             if parsed and isinstance(parsed, dict):
                 return parsed
 
+        # Heuristic fallback: detect target file mentioned in issue body or title
+        target = ""
+        m_files = re.findall(r"[\w/.-]+\.(?:py|ts|js|md|json|yml|yaml|toml|rs|go)", f"{issue_title} {issue_body}")
+        if m_files:
+            target = m_files[0].lstrip("./")
+
         return {
-            "can_fix": True,
-            "confidence": 0.8,
-            "target_file": "",
+            "can_fix": bool(target),
+            "confidence": 0.7 if target else 0.3,
+            "target_file": target,
+            "search_content": "",
+            "replacement_content": "",
+            "file_content": "",
             "explanation": f"Address {issue_title}",
-            "patch_description": "Verified automated bug fix",
+            "patch_description": f"Automated fix for {issue_title[:60]}",
         }
 
     async def generate_pr_metadata(

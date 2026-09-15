@@ -31,6 +31,7 @@ class StatusTracker:
         self._lock = threading.Lock()
 
         self.active_model = self.config.model_name
+        self.model_display_name = self.config.model_display_name
         self.ai_mode = "Gemini API (Online)" if (self.config.gemini_api_key) else "Antigravity Heuristic Engine"
         self.rate_limit_remaining = 5000
         self.rate_limit_limit = 5000

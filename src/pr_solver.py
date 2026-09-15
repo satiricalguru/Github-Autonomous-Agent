@@ -58,6 +58,18 @@ def _summarize_repo_tree(work_dir: Path, limit: int = 25) -> str:
     return "\n".join(entries)
 
 
+def _run_subprocess(
+    cmd: list[str], cwd: Path, timeout: float = 60.0
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        cmd,
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
 class PRSolver:
     """End-to-end pipeline to solve an issue and create a verified Pull Request."""
 
@@ -131,17 +143,15 @@ class PRSolver:
             # 2. Configure local git author and detect default branch
             username = self.config.github_username or "AutonomousGitHubAgent"
             email = f"{username}@users.noreply.github.com"
-            await asyncio.to_thread(subprocess.run, ["git", "config", "user.name", username], cwd=str(work_dir), capture_output=True)
-            await asyncio.to_thread(subprocess.run, ["git", "config", "user.email", email], cwd=str(work_dir), capture_output=True)
+            await asyncio.to_thread(_run_subprocess, ["git", "config", "user.name", username], work_dir)
+            await asyncio.to_thread(_run_subprocess, ["git", "config", "user.email", email], work_dir)
 
             base_branch = "main"
             try:
                 res_ref = await asyncio.to_thread(
-                    subprocess.run,
+                    _run_subprocess,
                     ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
-                    cwd=str(work_dir),
-                    capture_output=True,
-                    text=True,
+                    work_dir,
                 )
                 if res_ref.returncode == 0 and res_ref.stdout:
                     base_branch = res_ref.stdout.strip().split("/")[-1]
@@ -153,11 +163,9 @@ class PRSolver:
             branch_name = f"fix/issue-{issue_number}-{slug}" if slug else f"fix/issue-{issue_number}"
             self.status.update_hunter("SOLVING", f"Setting up branch {branch_name}...", active_repo=repo_full, active_step="Creating feature branch")
             await asyncio.to_thread(
-                subprocess.run,
+                _run_subprocess,
                 ["git", "checkout", "-B", branch_name],
-                cwd=str(work_dir),
-                check=True,
-                capture_output=True,
+                work_dir,
             )
 
             # 4. Read contributing guidelines if available
@@ -176,6 +184,7 @@ class PRSolver:
             # Enforce zero-hallucination policy: never open a PR on red tests.
             if self.config.auto_test_verification and not test_success:
                 logger.warning(f"Aborting PR for {repo_full}#{issue_number}: test suite failed.")
+                self.safety.state.mark_issue_handled(issue_url)
                 self.tasks.complete_task(
                     task_id=task_id,
                     status="FAILED",
@@ -192,12 +201,34 @@ class PRSolver:
                 file_tree_summary=file_summary,
             )
 
+            # Apply patch to local repository files
+            target_rel = (patch_info.get("target_file") or "").strip().lstrip("./")
+            search_str = patch_info.get("search_content", "")
+            replace_str = patch_info.get("replacement_content", "")
+            file_content = patch_info.get("file_content", "")
+
+            if target_rel:
+                target_path = work_dir / target_rel
+                try:
+                    if target_path.exists() and search_str and replace_str:
+                        orig = target_path.read_text(encoding="utf-8", errors="ignore")
+                        if search_str in orig:
+                            target_path.write_text(orig.replace(search_str, replace_str, 1), encoding="utf-8")
+                            logger.info(f"Applied replacement patch to {target_rel}")
+                    elif file_content:
+                        target_path.parent.mkdir(parents=True, exist_ok=True)
+                        target_path.write_text(file_content, encoding="utf-8")
+                        logger.info(f"Wrote patch file content to {target_rel}")
+                except Exception as e:
+                    logger.warning(f"Error applying patch to {target_rel}: {e}")
+
             # 6. Commit staged changes into feature branch (skip empty diffs)
             commit_msg = f"fix: resolve {issue_title[:50]} (closes #{issue_number})"
-            await asyncio.to_thread(subprocess.run, ["git", "add", "-A"], cwd=str(work_dir), capture_output=True, timeout=60)
-            diff_res = await asyncio.to_thread(subprocess.run, ["git", "diff", "--staged", "--stat"], cwd=str(work_dir), capture_output=True, text=True, timeout=60)
+            await asyncio.to_thread(_run_subprocess, ["git", "add", "-A"], work_dir)
+            diff_res = await asyncio.to_thread(_run_subprocess, ["git", "diff", "--staged", "--stat"], work_dir)
             if not (diff_res.stdout or "").strip():
                 logger.warning(f"No code changes produced for {repo_full}#{issue_number}; skipping PR.")
+                self.safety.state.mark_issue_handled(issue_url)
                 self.tasks.complete_task(
                     task_id=task_id,
                     status="FAILED",
@@ -205,18 +236,16 @@ class PRSolver:
                     details_update={"test_output": test_output},
                 )
                 return None
-            diff_summary_res = await asyncio.to_thread(subprocess.run, ["git", "diff", "--staged"], cwd=str(work_dir), capture_output=True, text=True, timeout=60)
+            diff_summary_res = await asyncio.to_thread(_run_subprocess, ["git", "diff", "--staged"], work_dir)
             diff_summary = (diff_summary_res.stdout or "")[:2000] or patch_info.get("patch_description", "Automated bug fix")
             commit_res = await asyncio.to_thread(
-                subprocess.run,
+                _run_subprocess,
                 ["git", "commit", "-m", commit_msg],
-                cwd=str(work_dir),
-                capture_output=True,
-                text=True,
-                timeout=60,
+                work_dir,
             )
             if commit_res.returncode != 0:
                 logger.warning(f"Git commit produced no commit for {repo_full}#{issue_number}: {(commit_res.stderr or '').strip()}")
+                self.safety.state.mark_issue_handled(issue_url)
                 self.tasks.complete_task(
                     task_id=task_id,
                     status="FAILED",
@@ -249,18 +278,16 @@ class PRSolver:
             # because PR creation is attempted regardless (fork workflow).
             if not self.config.dry_run:
                 push_res = await asyncio.to_thread(
-                    subprocess.run,
+                    _run_subprocess,
                     ["git", "push", "-u", "origin", branch_name],
-                    cwd=str(work_dir),
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
+                    work_dir,
+                    120.0,
                 )
                 if push_res.returncode != 0:
                     logger.warning(f"Git push failed (will attempt PR creation): {(push_res.stderr or '').strip()}")
 
-            pr_title = str(pr_metadata.get("title", f"fix: resolve {issue_title[:50]}") or f"fix: resolve {issue_title[:50]}")
-            pr_body = str(pr_metadata.get("body", f"Closes #{issue_number}") or f"Closes #{issue_number}")
+            pr_title = pr_metadata.get("title") or f"fix: resolve {issue_title[:50]}"
+            pr_body = pr_metadata.get("body") or f"Closes #{issue_number}"
             pr_result = await self.client.create_pull_request(
                 owner=owner,
                 repo=repo,
@@ -346,14 +373,14 @@ class PRSolver:
 
         try:
             res = await asyncio.to_thread(
-                subprocess.run,
+                _run_subprocess,
                 cmd,
-                cwd=str(repo_dir),
-                capture_output=True,
-                text=True,
-                timeout=180,
+                repo_dir,
+                180.0,
             )
-            output = (res.stdout or "") + (("\n" + res.stderr) if res.stderr else "")
+            stdout_txt = res.stdout or ""
+            stderr_txt = f"\n{res.stderr}" if res.stderr else ""
+            output = f"{stdout_txt}{stderr_txt}"
             return (res.returncode == 0), output.strip()[:8000] or "(empty test output)"
         except subprocess.TimeoutExpired:
             return False, "Test execution timed out."
