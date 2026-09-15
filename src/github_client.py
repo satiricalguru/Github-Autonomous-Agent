@@ -348,42 +348,10 @@ class GitHubClient:
     ) -> List[Dict[str, Any]]:
         """Search issues across GitHub repositories."""
         if self._has_gh:
-            cmd = [
-                "gh",
-                "search",
-                "issues",
-                query,
-                "--limit",
-                str(min(per_page, 50)),
-                "--json",
-                "number,title,url,repository,labels,body,state,assignees",
-            ]
-            res = await self._run_command(cmd, timeout=20.0)
-            if res is not None:
-                returncode, stdout, stderr = res
-                if returncode == 0 and stdout:
-                    try:
-                        items = json.loads(stdout)
-                        # Normalize fields for compatibility
-                        formatted = []
-                        for it in items:
-                            repo_info = it.get("repository", {})
-                            repo_name = repo_info.get("nameWithOwner") or repo_info.get("name", "")
-                            formatted.append({
-                                "number": it.get("number"),
-                                "title": it.get("title", ""),
-                                "html_url": it.get("url", ""),
-                                "body": it.get("body", ""),
-                                "labels": it.get("labels", []),
-                                "repository_url": f"https://api.github.com/repos/{repo_name}",
-                                "assignees": it.get("assignees", []),
-                                "assignee": it.get("assignees", [None])[0] if it.get("assignees") else None,
-                                "locked": bool(it.get("locked", False)),
-                                "state": it.get("state", "open"),
-                            })
-                        return formatted
-                    except Exception as e:
-                        logger.warning(f"gh search issues parse error: {e}")
+            endpoint = f"/search/issues?{urlencode({'q': query, 'sort': sort, 'order': order, 'per_page': min(per_page, 50)})}"
+            data = await self._run_gh_api(endpoint)
+            if data and isinstance(data, dict):
+                return data.get("items", [])
 
         res = await self._request("GET", "/search/issues", params={"q": query, "sort": sort, "order": order, "per_page": per_page})
         if res.status_code == 200:
