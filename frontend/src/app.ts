@@ -1,3 +1,4 @@
+import { escapeHtml } from './dom.js';
 /**
  * Autonomous GitHub Agent - Mission Control App
  * Pure Vanilla TypeScript/HTML/CSS Frontend Entry Point
@@ -13,6 +14,8 @@ import { WorkerCards } from './components/workerCards.js';
 import { LogStream } from './components/logStream.js';
 
 class MissionControlApp {
+  private settingsDirty = false;
+  private refreshing = false;
   private pollIntervalId: number | null = null;
   private taskDrawer!: TaskDrawer;
   private tasksTable!: TasksTable;
@@ -30,6 +33,23 @@ class MissionControlApp {
     this.setupKeyboardShortcuts();
     this.setupSettingsForm();
 
+    document.getElementById('menuToggleBtn')?.addEventListener('click', () => {
+      const opened = document.querySelector('.sidebar')?.classList.toggle('mobile-open');
+      document.getElementById('menuToggleBtn')?.setAttribute('aria-expanded', String(opened));
+    });
+    document.getElementById('pauseResumeBtn')?.addEventListener('click', async () => {
+      try { await api.pauseResume(); await this.refreshStatus(); }
+      catch (err: any) { this.showToast(err.message, 'error'); }
+    });
+    document.getElementById('stopBtn')?.addEventListener('click', async () => {
+      try {
+        await api.stop();
+        this.showToast('Stop requested; the agent is terminating owned work', 'info');
+        this.updateExecutionState('STOPPING');
+      } catch (err: any) { this.showToast(err.message, 'error'); }
+    });
+    document.querySelectorAll<HTMLElement>('[data-nav]').forEach(button => button.addEventListener('click', () => this.switchTab(button.dataset.nav as TabId)));
+
     // Initialize Components
     this.taskDrawer = new TaskDrawer();
     this.tasksTable = new TasksTable();
@@ -38,7 +58,9 @@ class MissionControlApp {
 
     // Subscribe to state changes for global UI updates
     store.subscribe((state) => {
-      if (state.status) {
+      if (state.lastError) {
+        this.updateExecutionState('DISCONNECTED', state.lastError);
+      } else if (state.status) {
         this.updateHeaderAndMetrics(state.status);
       }
     });
@@ -61,6 +83,8 @@ class MissionControlApp {
 
   public switchTab(tabId: TabId): void {
     sound.playClick();
+    document.querySelector('.sidebar')?.classList.remove('mobile-open');
+    document.getElementById('menuToggleBtn')?.setAttribute('aria-expanded', 'false');
     store.setState({ currentTab: tabId });
 
     // Update nav links
@@ -88,6 +112,7 @@ class MissionControlApp {
     if (modeBtn) {
       modeBtn.addEventListener('click', async () => {
         sound.playToggle();
+        (modeBtn as HTMLButtonElement).disabled = true;
         try {
           modeBtn.textContent = 'Switching...';
           const res = await api.toggleMode();
@@ -97,6 +122,9 @@ class MissionControlApp {
         } catch (err: any) {
           sound.playAlert();
           this.showToast(`Failed to switch mode: ${err.message}`, 'error');
+          await this.refreshStatus();
+        } finally {
+          (modeBtn as HTMLButtonElement).disabled = false;
         }
       });
     }
@@ -142,18 +170,24 @@ class MissionControlApp {
       shortcutsBtn.addEventListener('click', () => {
         sound.playClick();
         shortcutsModal.classList.add('open');
+        closeShortcutsBtn?.focus();
       });
     }
     if (closeShortcutsBtn && shortcutsModal) {
       closeShortcutsBtn.addEventListener('click', () => {
         sound.playClick();
         shortcutsModal.classList.remove('open');
+        shortcutsBtn?.focus();
       });
     }
     if (shortcutsModal) {
+      shortcutsModal.addEventListener('keydown', event => {
+        if (event.key === 'Tab') { event.preventDefault(); closeShortcutsBtn?.focus(); }
+      });
       shortcutsModal.addEventListener('click', (e) => {
         if (e.target === shortcutsModal) {
           shortcutsModal.classList.remove('open');
+          shortcutsBtn?.focus();
         }
       });
     }
@@ -182,6 +216,16 @@ class MissionControlApp {
 
   private setupKeyboardShortcuts(): void {
     window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        this.taskDrawer.close();
+        const modal = document.getElementById('shortcutsModal');
+        if (modal?.classList.contains('open')) {
+          modal.classList.remove('open');
+          document.getElementById('shortcutsBtn')?.focus();
+        }
+        return;
+      }
+      if (e.ctrlKey || e.metaKey || e.altKey || store.getState().isDrawerOpen || document.getElementById('shortcutsModal')?.classList.contains('open')) return;
       // Ignore if typing in an input
       const active = document.activeElement;
       if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT')) {
@@ -219,6 +263,7 @@ class MissionControlApp {
     const form = document.getElementById('settingsForm') as HTMLFormElement;
     if (!form) return;
 
+    form.addEventListener('input', () => { this.settingsDirty = true; });
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       sound.playClick();
@@ -230,6 +275,7 @@ class MissionControlApp {
 
       const payload = {
         model: modelSelect.value,
+        ai_provider: (document.getElementById('providerSelect') as HTMLSelectElement).value,
         max_concurrent_tasks: parseInt(maxTasksInput.value, 10),
         polling_interval_inbox: parseInt(inboxIntervalInput.value, 10),
         polling_interval_issues: parseInt(issuesIntervalInput.value, 10)
@@ -237,6 +283,7 @@ class MissionControlApp {
 
       try {
         await api.updateSettings(payload);
+        this.settingsDirty = false;
         sound.playSuccess();
         this.showToast('Settings saved successfully', 'success');
         await this.refreshStatus();
@@ -248,12 +295,14 @@ class MissionControlApp {
   }
 
   private async refreshStatus(): Promise<void> {
+    if (this.refreshing) return;
+    this.refreshing = true;
     try {
       const status = await api.getStatus();
       store.setState({ status, lastError: null });
     } catch (err: any) {
       store.setState({ lastError: err.message });
-    }
+    } finally { this.refreshing = false; }
   }
 
   private startPolling(): void {
@@ -309,14 +358,44 @@ class MissionControlApp {
       valUptime.textContent = `${hrs}h ${mins}m ${s}s`;
     }
 
-    // Populate Settings Select if models available
+    this.updateExecutionState(status.status);
+    const ceiling = document.getElementById('prCeilingInput') as HTMLInputElement;
+    if (ceiling) ceiling.value = `${(status as any).max_prs_per_day} PRs / 24 hours`;
+    const providerHealth = document.getElementById('providerHealth');
+    if (providerHealth) providerHealth.textContent = status.ai_health ? `${status.ai_health.provider}: ${status.ai_health.state}${status.ai_health.last_error ? ' — ' + status.ai_health.last_error : ''}` : 'Provider not verified';
+    const fleet = document.getElementById('overviewFleet');
+    if (fleet) fleet.innerHTML = Object.values(status.workers).map(worker => `<div class="fleet-row"><span>${escapeHtml(worker.name)}</span><span class="badge">${escapeHtml(worker.status)}</span></div>`).join('');
+    const overviewLogs = document.getElementById('overviewLogs');
+    if (overviewLogs) overviewLogs.textContent = status.recent_logs.slice(-4).join('\n') || 'No events recorded';
     const modelSelect = document.getElementById('modelSelect') as HTMLSelectElement;
-    if (modelSelect && status.config?.allowed_models) {
-      const currentSelected = modelSelect.value || status.model;
-      modelSelect.innerHTML = status.config.allowed_models.map(m => `
-        <option value="${m}" ${m === currentSelected ? 'selected' : ''}>${m}</option>
-      `).join('');
+    if (!this.settingsDirty && status.config) {
+      modelSelect.replaceChildren(...(status.config.allowed_models || [status.model]).map(model => {
+        const option = document.createElement('option');
+        option.value = model; option.textContent = model; option.selected = model === status.model;
+        return option;
+      }));
+      (document.getElementById('providerSelect') as HTMLSelectElement).value = status.config.ai_provider || 'auto';
+      (document.getElementById('maxTasksInput') as HTMLInputElement).value = String(status.config.max_concurrent_tasks);
+      (document.getElementById('inboxIntervalInput') as HTMLInputElement).value = String(status.config.polling_interval_inbox);
+      (document.getElementById('issuesIntervalInput') as HTMLInputElement).value = String(status.config.polling_interval_issues);
     }
+  }
+
+  private updateExecutionState(state: string, error?: string): void {
+    const stateTag = document.getElementById('executionState');
+    if (stateTag) stateTag.textContent = state;
+    const dot = document.getElementById('executionDot');
+    if (dot) {
+      dot.classList.toggle('pulse', state === 'RUNNING');
+      dot.style.background = state === 'RUNNING' ? 'var(--accent-green)' : state === 'DISCONNECTED' ? 'var(--accent-rose)' : 'var(--text-dim)';
+    }
+    const connection = document.getElementById('connectionStatus');
+    if (connection) { connection.textContent = error || `Agent: ${state}`; connection.hidden = !error; }
+    const pause = document.getElementById('pauseResumeBtn') as HTMLButtonElement;
+    if (pause) { pause.textContent = state === 'PAUSED' ? 'Resume' : 'Pause'; pause.disabled = !['RUNNING','PAUSED'].includes(state); }
+    const stop = document.getElementById('stopBtn') as HTMLButtonElement;
+    if (stop) stop.disabled = !['RUNNING','PAUSED'].includes(state);
+    document.querySelectorAll<HTMLButtonElement>('.trigger-worker-btn').forEach(button => button.disabled = state !== 'RUNNING' || !!button.dataset.busy);
   }
 
   private showToast(message: string, type: 'success' | 'error' | 'info'): void {
@@ -327,7 +406,7 @@ class MissionControlApp {
     toast.className = `toast toast-${type}`;
     toast.innerHTML = `
       <span>${type === 'success' ? '✓' : type === 'error' ? '⚠️' : 'ℹ️'}</span>
-      <span>${message}</span>
+      <span>${escapeHtml(message)}</span>
     `;
 
     container.appendChild(toast);

@@ -1,6 +1,8 @@
 """Task history and detailed execution logger for Autonomous GitHub Agent."""
 
 import json
+import sqlite3
+import copy
 import logging
 import threading
 import time
@@ -30,89 +32,89 @@ class TaskTracker:
         self.config = agent_config or config
         self.tasks_file = self.config.scratch_dir / "tasks_history.json"
         self.tasks: List[Dict[str, Any]] = []
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._initialize()
         self._load()
 
+    def _db(self):
+        return sqlite3.connect(self.tasks_file.with_suffix(".sqlite3"), timeout=15)
+
+    def _initialize(self):
+        self.tasks_file.parent.mkdir(parents=True, exist_ok=True)
+        with self._db() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, payload TEXT)")
+            db.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY)")
+            db.execute("BEGIN IMMEDIATE")
+            if not db.execute("SELECT 1 FROM metadata WHERE key='migrated'").fetchone():
+                if self.tasks_file.exists():
+                    records = json.loads(self.tasks_file.read_text())
+                    for task in records:
+                        db.execute("INSERT OR IGNORE INTO tasks VALUES (?,?)", (task["id"], json.dumps(task)))
+                db.execute("INSERT INTO metadata VALUES ('migrated')")
+
     def _load(self):
-        if not self.tasks_file.exists():
-            return
-        try:
-            with open(self.tasks_file, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-                if isinstance(loaded, list):
-                    self.tasks = loaded
-        except Exception as e:
-            logger.debug(f"Transient read failure on {self.tasks_file}: {e}")
+        with self._lock, self._db() as db:
+            self.tasks = [json.loads(row[0]) for row in db.execute("SELECT payload FROM tasks ORDER BY rowid DESC LIMIT 100")]
 
     def save(self):
-        try:
-            with self._lock:
-                tasks_snapshot = list(self.tasks)
-            atomic_write_json(self.tasks_file, tasks_snapshot)
-        except Exception as e:
-            logger.warning(f"Failed to save tasks history: {e}")
+        self._load()
+        atomic_write_json(self.tasks_file, self.tasks)
 
-    def rebind(self, agent_config: Optional[AgentConfig] = None):
-        """Re-point this tracker at a different config (tests/isolated runs)."""
+    def rebind(self, agent_config=None):
         if agent_config is not None:
             self.config = agent_config
             self.tasks_file = self.config.scratch_dir / "tasks_history.json"
-        self.tasks = []
+        self._initialize()
         self._load()
 
-    def create_task(
-        self,
-        category: str,
-        title: str,
-        target_repo: Optional[str] = None,
-        target_url: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None,
-    ) -> str:
-        """Register a new task in progress."""
-        task_id = f"TASK-{int(time.time())}-{uuid.uuid4().hex[:4].upper()}"
-        task_obj = {
-            "id": task_id,
-            "category": category,
-            "title": title,
-            "target_repo": target_repo or "N/A",
-            "target_url": target_url or "",
-            "status": "IN_PROGRESS",
-            "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-            "completed_at": None,
-            "outcome": "Executing...",
-            "details": details or {},
-        }
-        self.tasks.insert(0, task_obj)
-        self.tasks = self.tasks[:100]  # Keep last 100 tasks
+    def create_task(self, category, title, target_repo=None, target_url=None, details=None):
+        task_id = f"TASK-{int(time.time())}-{uuid.uuid4().hex[:8].upper()}"
+        record = {"id": task_id, "category": category, "title": title,
+            "target_repo": target_repo or "N/A", "target_url": target_url or "", "status": "IN_PROGRESS",
+            "started_at": datetime.now(timezone.utc).isoformat(), "completed_at": None,
+            "outcome": "Executing...", "details": details or {}}
+        with self._lock, self._db() as db:
+            db.execute("INSERT INTO tasks VALUES (?,?)", (task_id, json.dumps(record)))
         self.save()
         return task_id
 
-    def complete_task(
-        self,
-        task_id: str,
-        status: str = "COMPLETED",
-        outcome: str = "Successfully completed",
-        details_update: Optional[Dict[str, Any]] = None,
-    ):
-        """Mark an active task as finished."""
-        for t in self.tasks:
-            if t["id"] == task_id:
-                t["status"] = status
-                t["completed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-                t["outcome"] = outcome
-                if details_update:
-                    t["details"].update(details_update)
-                break
+    def complete_task(self, task_id, status="COMPLETED", outcome="Successfully completed", details_update=None):
+        with self._lock, self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT payload FROM tasks WHERE id=?", (task_id,)).fetchone()
+            if not row:
+                raise ValueError("Unknown task ID")
+            task = json.loads(row[0])
+            task.update(status=status, outcome=outcome, completed_at=datetime.now(timezone.utc).isoformat())
+            task["details"].update(details_update or {})
+            db.execute("UPDATE tasks SET payload=? WHERE id=?", (json.dumps(task), task_id))
         self.save()
 
-    def get_all_tasks(self) -> List[Dict[str, Any]]:
-        return self.tasks
+    def get_all_tasks(self):
+        self._load()
+        return copy.deepcopy(self.tasks)
 
-    def get_completed_tasks(self) -> List[Dict[str, Any]]:
-        return [t for t in self.tasks if t["status"] in ("COMPLETED", "SKIPPED", "REJECTED", "FAILED")]
+    def get_api_tasks(self):
+        records = []
+        for task in self.get_all_tasks():
+            status = {"IN_PROGRESS": "running", "COMPLETED": "completed", "FAILED": "failed",
+                      "CANCELLED": "cancelled", "SKIPPED": "skipped", "REJECTED": "rejected"}.get(task["status"], "pending")
+            records.append({**task, "status": status,
+                "type": "pr_solve" if task["category"] == "SOLVER" else "inbox_notification",
+                "target": task["target_repo"], "created_at": task["started_at"],
+                "pr_url": task["details"].get("pr_url"), "diff_preview": task["details"].get("diff_preview"),
+                "error": task["outcome"] if status in ("failed", "rejected") else None})
+        return records
 
-    def get_active_tasks(self) -> List[Dict[str, Any]]:
-        return [t for t in self.tasks if t["status"] == "IN_PROGRESS"]
+    def get_completed_tasks(self):
+        return [t for t in self.get_all_tasks() if t["status"] != "IN_PROGRESS"]
+
+    def get_active_tasks(self):
+        return [t for t in self.get_all_tasks() if t["status"] == "IN_PROGRESS"]
+
+    def cancel_orphaned_tasks(self):
+        for task in self.get_active_tasks():
+            self.complete_task(task["id"], "CANCELLED", "Interrupted by previous process shutdown")
 
     def render_tasks_table(self) -> Table:
         """Render rich CLI table of all recent tasks."""

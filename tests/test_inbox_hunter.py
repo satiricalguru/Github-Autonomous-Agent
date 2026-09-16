@@ -35,6 +35,14 @@ class TestInboxHunter(unittest.IsolatedAsyncioTestCase):
         from src.task_tracker import TaskTracker
         self.status = StatusTracker(self.cfg)
         self.tasks = TaskTracker(self.cfg)
+        self.ai = MagicMock()
+        self.ai.evaluate_notification = AsyncMock(return_value={
+            "provider_verified": True, "should_respond": True, "confidence": 0.95,
+            "suggested_reply": "Could you share a minimal reproduction and the affected version?",
+        })
+        self.ai.analyze_issue_actionability = AsyncMock(return_value={
+            "is_actionable": True, "actionability_score": 0.9,
+        })
 
     async def asyncTearDown(self):
         self.temp_dir.cleanup()
@@ -62,7 +70,7 @@ class TestInboxHunter(unittest.IsolatedAsyncioTestCase):
         mock_client.mark_notification_read = AsyncMock(return_value=True)
         mock_client.mark_notification_done = AsyncMock(return_value=True)
 
-        inbox = InboxManager(client=mock_client, safety=self.safety, agent_config=self.cfg, status=self.status, tasks=self.tasks)
+        inbox = InboxManager(client=mock_client, safety=self.safety, ai=self.ai, agent_config=self.cfg, status=self.status, tasks=self.tasks)
         results = await inbox.process_inbox()
 
         self.assertEqual(len(results), 1)
@@ -72,7 +80,7 @@ class TestInboxHunter(unittest.IsolatedAsyncioTestCase):
         self.assertIn("action", results[0])
 
     async def test_issue_hunter_includes_language_and_stars(self):
-        """Verify IssueHunter includes language in candidates and stars:>= in query."""
+        """Verify issue search and repository metadata enforce the star threshold."""
         mock_client = MagicMock()
         captured_queries = []
 
@@ -92,14 +100,17 @@ class TestInboxHunter(unittest.IsolatedAsyncioTestCase):
             ]
 
         mock_client.search_issues = AsyncMock(side_effect=mock_search)
+        mock_client.get_repository = AsyncMock(return_value={"stargazers_count": 100001})
+        mock_client.has_linked_pr = AsyncMock(return_value=False)
 
-        hunter = IssueHunter(client=mock_client, safety=self.safety, agent_config=self.cfg, status=self.status)
+        hunter = IssueHunter(client=mock_client, safety=self.safety, ai=self.ai, agent_config=self.cfg, status=self.status)
         candidates = await hunter.hunt_issues(limit=1)
 
         self.assertGreaterEqual(len(candidates), 1)
         self.assertIn("language", candidates[0])
         self.assertEqual(candidates[0]["language"], "python")
-        self.assertTrue(any("stars:>=1000" in q for q in captured_queries))
+        self.assertTrue(all("is:issue" in q and "stars:" not in q for q in captured_queries))
+        mock_client.get_repository.assert_awaited_once_with("fastapi", "fastapi")
 
     def test_atomic_write_json(self):
         """Verify atomic_write_json cleanly creates files without leaving tmp files."""
@@ -164,6 +175,7 @@ class TestInboxHunter(unittest.IsolatedAsyncioTestCase):
         inbox = InboxManager(
             client=mock_client,
             safety=self.safety,
+            ai=self.ai,
             agent_config=self.cfg,
             status=self.status,
             tasks=self.tasks,

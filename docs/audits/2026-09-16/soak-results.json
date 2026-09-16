@@ -1,0 +1,12 @@
+{
+  "duration_seconds": 30.85,
+  "iterations": {
+    "inbox": 7,
+    "hunter": 7
+  },
+  "transient_failure_recovered": true,
+  "pause_prevented_new_work": true,
+  "separate_process_stop": true,
+  "final_status": "STOPPED",
+  "owned_cycles_remaining": 0
+}

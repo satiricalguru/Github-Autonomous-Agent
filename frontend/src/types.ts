@@ -4,7 +4,7 @@
 
 export type AgentMode = 'LIVE' | 'DRY_RUN';
 
-export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed';
+export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'skipped' | 'rejected';
 
 export interface AgentTask {
   id: string;
@@ -42,13 +42,15 @@ export interface SystemMetrics {
   prs_opened: number;
   inbox_processed: number;
   active_workers: number;
-  rate_limit_remaining?: number;
-  rate_limit_limit?: number;
+  rate_limit_remaining?: number | null;
+  rate_limit_limit?: number | null;
   rate_limit_reset?: string;
 }
 
 export interface AgentConfig {
   dry_run: boolean;
+  ai_provider?: string;
+  sync_ide_model?: boolean;
   account: string;
   model: string;
   max_concurrent_tasks: number;
@@ -67,6 +69,7 @@ export interface AgentStatusResponse {
   workers: Record<string, WorkerState>;
   tasks: AgentTask[];
   recent_logs: string[];
+  ai_health?: { provider: string; model: string; state: string; configured: boolean; last_error?: string };
 }
 
 export type TabId = 'overview' | 'tasks' | 'workers' | 'terminal' | 'settings';

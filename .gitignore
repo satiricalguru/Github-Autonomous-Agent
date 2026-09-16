@@ -13,6 +13,11 @@ ENV/
 # Scratch & Sandbox Directories
 scratch/repos/
 scratch/*.json
+scratch/*.sqlite3*
+scratch/*.lock
+/build/
+/dist/
+*.egg-info/
 scratch/*.tmp*
 *.tmp.*
 

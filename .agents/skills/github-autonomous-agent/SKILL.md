@@ -28,13 +28,13 @@ The system consists of two primary continuous workflows running concurrently:
    - Marks handled notifications as read.
 
 2. **Top-Tier Open Source Issue Hunter & PR Solver**:
-   - Searches top starred repositories (e.g. `stars:>1000`, active commits) for `is:issue is:open no:assignee label:"good first issue"` or `label:"bug"`.
+   - Searches issues and verifies repository star counts using repository metadata for `is:issue is:open no:assignee label:"good first issue"` or `label:"bug"`.
    - Filters for issues with clear repro steps or reproducible error traces.
    - Clones/Forks the repository to a workspace sandbox.
    - Diagnoses root cause, implements the minimal required code fix.
-   - Executes unit tests and linter suites.
+   - Requires passing baseline tests, a failing regression before the fix, passing patched tests, and verification of the committed repair. Repository-specific lint rules may require additional integration.
    - Commits with descriptive conventional commit message.
-   - Pushes branch to fork and opens a complete, professional Pull Request.
+   - Checks fork ownership, pushes successfully, and creates a draft Pull Request with executed verification evidence.
 
 ---
 
@@ -45,32 +45,34 @@ Check that GitHub CLI (`gh`) is authenticated and API keys are accessible:
 ```bash
 gh auth status
 ```
-If using Gemini API directly for LLM reasoning, ensure `GEMINI_API_KEY` is loaded or `gh` auth keyring is active.
+GitHub and model authentication are independent. For Antigravity, configure `AI_PROVIDER=antigravity` and authenticate `agy`; use `agy models` for actual model IDs. Direct Gemini inference needs `GEMINI_API_KEY` and a supported Gemini API model. Run `./run.sh doctor` to verify GitHub, real inference, and isolated test execution.
 
 ### Step 2: Running Autonomous Execution
 To launch the agent orchestrator in continuous multi-task mode:
 
 - **Dry-run mode (Recommended for first run / preview)**:
   ```bash
-  python3 -m src.cli start --dry-run
+  ./run.sh start --dry-run
   ```
 - **Live autonomous mode**:
   ```bash
-  python3 -m src.cli start
+  ./run.sh start --live
   ```
 - **Inbox-only mode**:
   ```bash
-  python3 -m src.cli inbox
+  ./run.sh inbox
   ```
 - **Issue hunting & solving only**:
   ```bash
-  python3 -m src.cli solve --auto
+  ./run.sh solve --auto
   ```
 
+Dry-run is the default. Explicit `--live` enables external GitHub writes; honor the user's requested mode. The scheduler repeats while its foreground process is alive, with finite model requests and configured waits. It is not a supervised background service. The dashboard served by `start` can pause/resume and queue work; the standalone `web` command cannot execute workers.
+
 ### Step 3: Stopping Autonomous Execution
-When the user says `"stop github action"`, send SIGINT or run:
+When the user says `"stop github action"`, send SIGINT or use the authenticated running-process control endpoint through:
 ```bash
-python3 -m src.cli stop
+./run.sh stop
 ```
 
 ---
@@ -79,7 +81,7 @@ python3 -m src.cli stop
 Before any PR is created:
 1. `CONTRIBUTING.md` has been read and respected.
 2. Issue is not assigned to anyone else and has no active PRs in progress.
-3. Code changes pass existing test suites (e.g., `pytest`, `npm test`, `cargo test`, `go test`).
+3. New regression fails before the fix, then the patched suite and exact committed repair pass existing test suites (e.g., `pytest`, `npm test`, `cargo test`, `go test`).
 4. PR description explains:
    - Summary of the problem.
    - Root cause analysis.

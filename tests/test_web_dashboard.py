@@ -13,13 +13,14 @@ class TestWebDashboard:
         model = detect_active_ai_model()
         assert "3.8" in model or "3.7" in model or "gemini" in model.lower()
 
-    def test_status_tracker_snapshot_includes_model_metadata(self):
+    def test_status_tracker_snapshot_includes_model_metadata(self, cfg):
         """Verify status snapshot exports active model and display name."""
-        snapshot = status_tracker.get_snapshot()
+        from src.status_tracker import StatusTracker
+        snapshot = StatusTracker(cfg).get_snapshot()
         assert "active_model" in snapshot
         assert "model_display_name" in snapshot
         assert "rate_limit_remaining" in snapshot
-        assert snapshot["rate_limit_remaining"] > 0
+        assert snapshot["rate_limit_remaining"] is None
 
     def test_config_update_helper(self):
         """Verify config update method correctly modifies runtime fields."""

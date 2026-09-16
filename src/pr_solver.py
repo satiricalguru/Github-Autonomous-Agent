@@ -1,388 +1,263 @@
-"""PR Solver: Clones, diagnoses, fixes, tests, and submits Pull Requests for open issues."""
-
+"""Issue repair with isolated tests, red/green regression evidence, and checked git operations."""
 import asyncio
+import base64
 import logging
+import os
 import re
-import shutil
-import subprocess
+import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import Optional
 
-if TYPE_CHECKING:
-    from .ai_engine import AIEngine
-    from .config import AgentConfig, config
-    from .github_client import GitHubClient
-    from .safety_guardrails import SafetyGuardrails
-    from .status_tracker import StatusTracker, status_tracker
-    from .task_tracker import TaskTracker, task_tracker
-else:
-    try:
-        from .ai_engine import AIEngine
-        from .config import AgentConfig, config
-        from .github_client import GitHubClient
-        from .safety_guardrails import SafetyGuardrails
-        from .status_tracker import StatusTracker, status_tracker
-        from .task_tracker import TaskTracker, task_tracker
-    except ImportError:
-        from ai_engine import AIEngine
-        from config import AgentConfig, config
-        from github_client import GitHubClient
-        from safety_guardrails import SafetyGuardrails
-        from status_tracker import StatusTracker, status_tracker
-        from task_tracker import TaskTracker, task_tracker
+from .ai_engine import AIEngine
+from .config import config
+from .github_client import GitHubClient
+from .process import run_process
+from .sandbox import RepositorySandbox, detect_test_command, tests_executed
+from .safety_guardrails import SafetyGuardrails
+from .status_tracker import status_tracker
+from .task_tracker import task_tracker
 
 logger = logging.getLogger("github_agent.solver")
+REPO_NAME = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+SOURCE_EXTENSIONS = {".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".c", ".cpp", ".h"}
 
 
-def _summarize_repo_tree(work_dir: Path, limit: int = 25) -> str:
-    """Summarize repo layout without loading huge trees into the LLM prompt."""
-    entries: list[str] = []
-    try:
-        for p in sorted(work_dir.rglob("*")):
-            if len(entries) >= limit:
-                break
-            try:
-                rel = p.relative_to(work_dir)
-            except ValueError:
-                continue
-            if ".git" in rel.parts or "__pycache__" in rel.parts or "node_modules" in rel.parts:
-                continue
-            entries.append(str(rel))
-    except Exception:
-        pass
-    if not entries:
-        try:
-            entries = [str(p.relative_to(work_dir)) for p in list(work_dir.glob("*"))[:15]]
-        except Exception:
-            pass
-    return "\n".join(entries)
+def _is_test_path(relative):
+    path = Path(relative)
+    return (any(part.lower() in ("test", "tests", "__tests__", "spec", "specs") for part in path.parts)
+            or path.name.startswith("test_") or bool(re.search(r"(?:_test\.[^.]+|\.(?:test|spec)\.[^.]+)$", path.name)))
 
 
-def _run_subprocess(
-    cmd: list[str], cwd: Path, timeout: float = 60.0
-) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        cmd,
-        cwd=str(cwd),
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+def _safe_target(repository, relative):
+    path = Path(relative)
+    if not relative or path.is_absolute() or any(part in ("..", ".git") for part in path.parts):
+        raise ValueError("Unsafe patch path")
+    if path.name.startswith(".env") or path.suffix in (".pem", ".key"):
+        raise ValueError("Sensitive file cannot be a patch target")
+    current = repository.resolve()
+    for part in path.parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError("Patch targets must not traverse symlinks")
+    if repository.resolve() not in current.resolve().parents:
+        raise ValueError("Patch target escapes repository")
+    return current
+
+
+def _summarize_repo_tree(work_dir, limit=200):
+    paths = []
+    for path in work_dir.rglob("*"):
+        if len(paths) >= limit:
+            break
+        relative = path.relative_to(work_dir)
+        if not any(part in (".git", "node_modules", "__pycache__", ".venv") for part in relative.parts) and path.is_file() and not path.is_symlink():
+            paths.append(str(relative))
+    return "\n".join(sorted(paths))
 
 
 class PRSolver:
-    """End-to-end pipeline to solve an issue and create a verified Pull Request."""
-
-    def __init__(
-        self,
-        client: Optional[GitHubClient] = None,
-        safety: Optional[SafetyGuardrails] = None,
-        ai: Optional[AIEngine] = None,
-        agent_config: Optional[AgentConfig] = None,
-        status: Optional[StatusTracker] = None,
-        tasks: Optional[TaskTracker] = None,
-    ):
+    def __init__(self, client=None, safety=None, ai=None, agent_config=None, status=None, tasks=None):
         self.config = agent_config or config
         self.client = client or GitHubClient(self.config)
         self.safety = safety or SafetyGuardrails(self.config)
         self.ai = ai or AIEngine(self.config)
         self.status = status if status is not None else status_tracker
         self.tasks = tasks if tasks is not None else task_tracker
+        self.sandbox = RepositorySandbox(self.config)
+        self._dry_run_issues = set()
 
-    async def solve_issue(self, candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Attempt to solve an issue, verify locally with tests, and open a PR."""
-        repo_full = candidate.get("repo", "")
-        issue_number = candidate.get("issue_number")
-        issue_title = candidate.get("title", "")
-        issue_body = candidate.get("body", "") or ""
-        issue_url = candidate.get("url", "")
-        if not repo_full or "/" not in repo_full or not isinstance(issue_number, int):
-            logger.warning(f"Skipping malformed solver candidate: {candidate!r}")
-            return None
+    def _apply_patch(self, repository, patch):
+        relative = patch.get("target_file")
+        if not isinstance(relative, str):
+            raise ValueError("Missing patch target")
+        target = _safe_target(repository, relative)
+        search, replacement, content = patch.get("search_content", ""), patch.get("replacement_content", ""), patch.get("file_content", "")
+        if not all(isinstance(value, str) for value in (search, replacement, content)):
+            raise ValueError("Patch content must be text")
+        if search:
+            original = target.read_text()
+            if original.count(search) != 1:
+                raise ValueError("Patch search snippet must match exactly once")
+            content = original.replace(search, replacement, 1)
+        elif not content:
+            raise ValueError("Patch contains no modification")
+        if len(content.encode()) > 256 * 1024:
+            raise ValueError("Patch exceeds size bound")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+        return relative
 
-        logger.info(f"Starting solver for {repo_full}#{issue_number}: {issue_title}")
+    async def _git(self, repository, *args, authenticated=False):
+        env = dict(os.environ)
+        env.update(GIT_TERMINAL_PROMPT="0", GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull)
+        if authenticated:
+            if not self.config.github_token:
+                raise RuntimeError("GitHub authentication unavailable")
+            auth = base64.b64encode(f"x-access-token:{self.config.github_token}".encode()).decode()
+            env.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="http.https://github.com/.extraheader", GIT_CONFIG_VALUE_0=f"AUTHORIZATION: basic {auth}")
+        result = await run_process(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", *args], cwd=repository, timeout=180, env=env)
+        if result.returncode:
+            raise RuntimeError(f"git {args[0]} failed (exit {result.returncode})")
+        return result.stdout
 
-        # Check safety allowance
-        can_pr, reason = self.safety.can_submit_pr()
-        if not can_pr:
-            logger.warning(f"PR creation blocked by safety rule: {reason}")
-            return None
+    def _source_context(self, repository, candidate):
+        words = set(re.findall(r"[a-zA-Z_]{4,}", candidate.get("title", "") + " " + candidate.get("body", "")))
+        files = [p for p in repository.rglob("*") if p.suffix in SOURCE_EXTENSIONS and p.is_file() and not p.is_symlink()
+                 and not any(part in (".git", "node_modules", "__pycache__", ".venv") for part in p.relative_to(repository).parts)]
+        files.sort(key=lambda p: (-sum(w.lower() in str(p.relative_to(repository)).lower() for w in words), str(p)))
+        snippets, remaining = [], 40000
+        for path in files[:12]:
+            if path.stat().st_size > 256000:
+                continue
+            content = path.read_text(errors="replace")[:remaining]
+            snippets.append(f"FILE {path.relative_to(repository)}\n{content}")
+            remaining -= len(content)
+            if remaining <= 0:
+                break
+        return "\n\n".join(snippets)
 
-        owner, repo = repo_full.split("/", 1)
-        safe_repo_name = f"{owner}_{repo}"
-        work_dir = self.config.repos_dir / safe_repo_name
-
-        task_id = self.tasks.create_task(
-            category="SOLVER",
-            title=f"Fix #{issue_number}: {issue_title}",
-            target_repo=repo_full,
-            target_url=issue_url,
-            details={"issue_number": issue_number, "repo": repo_full},
-        )
-        self.status.update_hunter("SOLVING", f"Solving {repo_full}#{issue_number}: {issue_title[:30]}", active_repo=repo_full, active_step="Initializing workspace")
-        self.status.log_event("SOLVER", f"Started solver on {repo_full}#{issue_number}")
-
-        try:
-            # 1. Setup local repository clone
-            if not work_dir.exists():
-                self.status.update_hunter("SOLVING", f"Cloning {repo_full}...", active_repo=repo_full, active_step="Cloning repo")
-                logger.info(f"Cloning https://github.com/{repo_full}.git into {work_dir}...")
-                clone_cmd = [
-                    "git",
-                    "clone",
-                    "--depth",
-                    "20",
-                    f"https://github.com/{repo_full}.git",
-                    str(work_dir),
-                ]
-                await asyncio.to_thread(
-                    subprocess.run, clone_cmd, check=True, capture_output=True,
-                    timeout=180,
-                )
-
-            # 2. Configure local git author and detect default branch
-            username = self.config.github_username or "AutonomousGitHubAgent"
-            email = f"{username}@users.noreply.github.com"
-            await asyncio.to_thread(_run_subprocess, ["git", "config", "user.name", username], work_dir)
-            await asyncio.to_thread(_run_subprocess, ["git", "config", "user.email", email], work_dir)
-
-            base_branch = "main"
-            try:
-                res_ref = await asyncio.to_thread(
-                    _run_subprocess,
-                    ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
-                    work_dir,
-                )
-                if res_ref.returncode == 0 and res_ref.stdout:
-                    base_branch = res_ref.stdout.strip().split("/")[-1]
-            except Exception:
-                base_branch = "main"
-
-            # 3. Create isolated feature branch
-            slug = re.sub(r"[^a-zA-Z0-9]+", "-", issue_title.lower()).strip("-")[:30].strip("-")
-            branch_name = f"fix/issue-{issue_number}-{slug}" if slug else f"fix/issue-{issue_number}"
-            self.status.update_hunter("SOLVING", f"Setting up branch {branch_name}...", active_repo=repo_full, active_step="Creating feature branch")
-            await asyncio.to_thread(
-                _run_subprocess,
-                ["git", "checkout", "-B", branch_name],
-                work_dir,
-            )
-
-            # 4. Read contributing guidelines if available
-            contributing_path = work_dir / "CONTRIBUTING.md"
-            contributing_guidelines = ""
-            if contributing_path.exists():
-                contributing_guidelines = contributing_path.read_text(
-                    encoding="utf-8", errors="ignore"
-                )[:2000]
-
-            # 5. Synthesize patch strategy and execute test suite verification
-            self.status.update_hunter("SOLVING", "Analyzing bug and running automated tests...", active_repo=repo_full, active_step="Executing tests")
-            test_success, test_output = await self._run_repo_tests(work_dir)
-            logger.info(f"Test run result: success={test_success}\nOutput: {test_output[:200]}")
-
-            # Enforce zero-hallucination policy: never open a PR on red tests.
-            if self.config.auto_test_verification and not test_success:
-                logger.warning(f"Aborting PR for {repo_full}#{issue_number}: test suite failed.")
-                self.safety.state.mark_issue_handled(issue_url)
-                self.tasks.complete_task(
-                    task_id=task_id,
-                    status="FAILED",
-                    outcome="Aborted: local tests failed",
-                    details_update={"test_output": test_output},
-                )
-                return None
-
-            file_summary = _summarize_repo_tree(work_dir)
-            patch_info = await self.ai.generate_code_patch(
-                repo=repo_full,
-                issue_title=issue_title,
-                issue_body=issue_body,
-                file_tree_summary=file_summary,
-            )
-
-            # Apply patch to local repository files
-            target_rel = (patch_info.get("target_file") or "").strip().lstrip("./")
-            search_str = patch_info.get("search_content", "")
-            replace_str = patch_info.get("replacement_content", "")
-            file_content = patch_info.get("file_content", "")
-
-            if target_rel:
-                target_path = work_dir / target_rel
-                try:
-                    if target_path.exists() and search_str and replace_str:
-                        orig = target_path.read_text(encoding="utf-8", errors="ignore")
-                        if search_str in orig:
-                            target_path.write_text(orig.replace(search_str, replace_str, 1), encoding="utf-8")
-                            logger.info(f"Applied replacement patch to {target_rel}")
-                    elif file_content:
-                        target_path.parent.mkdir(parents=True, exist_ok=True)
-                        target_path.write_text(file_content, encoding="utf-8")
-                        logger.info(f"Wrote patch file content to {target_rel}")
-                except Exception as e:
-                    logger.warning(f"Error applying patch to {target_rel}: {e}")
-
-            # 6. Commit staged changes into feature branch (skip empty diffs)
-            commit_msg = f"fix: resolve {issue_title[:50]} (closes #{issue_number})"
-            await asyncio.to_thread(_run_subprocess, ["git", "add", "-A"], work_dir)
-            diff_res = await asyncio.to_thread(_run_subprocess, ["git", "diff", "--staged", "--stat"], work_dir)
-            if not (diff_res.stdout or "").strip():
-                logger.warning(f"No code changes produced for {repo_full}#{issue_number}; skipping PR.")
-                self.safety.state.mark_issue_handled(issue_url)
-                self.tasks.complete_task(
-                    task_id=task_id,
-                    status="FAILED",
-                    outcome="Aborted: empty diff (no fix applied)",
-                    details_update={"test_output": test_output},
-                )
-                return None
-            diff_summary_res = await asyncio.to_thread(_run_subprocess, ["git", "diff", "--staged"], work_dir)
-            diff_summary = (diff_summary_res.stdout or "")[:2000] or patch_info.get("patch_description", "Automated bug fix")
-            commit_res = await asyncio.to_thread(
-                _run_subprocess,
-                ["git", "commit", "-m", commit_msg],
-                work_dir,
-            )
-            if commit_res.returncode != 0:
-                logger.warning(f"Git commit produced no commit for {repo_full}#{issue_number}: {(commit_res.stderr or '').strip()}")
-                self.safety.state.mark_issue_handled(issue_url)
-                self.tasks.complete_task(
-                    task_id=task_id,
-                    status="FAILED",
-                    outcome="Aborted: commit failed (empty)",
-                    details_update={"test_output": test_output},
-                )
-                return None
-
-            # 7. Construct verified PR metadata with AI reasoning
-            self.status.update_hunter("SOLVING", "Constructing verified PR metadata with AI reasoning...", active_repo=repo_full, active_step="Generating PR with Gemini")
-            pr_metadata = await self.ai.generate_pr_metadata(
-                issue_title=issue_title,
-                issue_body=issue_body,
-                issue_number=issue_number,
-                diff_summary=diff_summary,
-                test_output=test_output,
-            )
-
-            # 8. Submit Pull Request
-            self.status.update_hunter("SOLVING", f"Submitting Pull Request for {repo_full}...", active_repo=repo_full, active_step="Submitting PR")
-            head_branch = (
-                f"{self.config.github_username}:{branch_name}"
-                if self.config.github_username
-                else branch_name
-            )
-
-            # In live mode, push branch to remote before creating PR.
-            # NOTE: pushing to `origin` of an upstream clone only works for
-            # forks / repos with write access; failures are non-fatal here
-            # because PR creation is attempted regardless (fork workflow).
-            if not self.config.dry_run:
-                push_res = await asyncio.to_thread(
-                    _run_subprocess,
-                    ["git", "push", "-u", "origin", branch_name],
-                    work_dir,
-                    120.0,
-                )
-                if push_res.returncode != 0:
-                    logger.warning(f"Git push failed (will attempt PR creation): {(push_res.stderr or '').strip()}")
-
-            pr_title = pr_metadata.get("title") or f"fix: resolve {issue_title[:50]}"
-            pr_body = pr_metadata.get("body") or f"Closes #{issue_number}"
-            pr_result = await self.client.create_pull_request(
-                owner=owner,
-                repo=repo,
-                title=pr_title,
-                body=pr_body,
-                head=head_branch,
-                base=base_branch,
-            )
-
-            if pr_result:
-                pr_url = pr_result.get("html_url", f"https://github.com/{repo_full}/pulls")
-                self.safety.state.record_pr_submission(repo_full, issue_url, pr_url)
-                logger.info(f"Successfully processed {repo_full}#{issue_number} -> PR {pr_url}")
-                self.tasks.complete_task(
-                    task_id=task_id,
-                    status="COMPLETED",
-                    outcome=f"Created PR: {pr_title[:35]}",
-                    details_update={"pr_url": pr_url, "title": pr_title, "test_output": test_output},
-                )
-                self.safety.state.mark_issue_handled(issue_url)
-                return {
-                    "issue_url": issue_url,
-                    "pr_url": pr_url,
-                    "title": pr_title,
-                    "test_output": test_output,
-                    "dry_run": pr_result.get("dry_run", False),
-                }
-            # PR creation failed without exception: record and avoid hot-loop.
-            self.tasks.complete_task(
-                task_id=task_id,
-                status="FAILED",
-                outcome="PR creation failed",
-                details_update={"test_output": test_output},
-            )
-            self.safety.state.mark_issue_handled(issue_url)
-
-        except Exception as e:
-            logger.error(f"Failed to solve {repo_full}#{issue_number}: {e}")
-            try:
-                self.tasks.complete_task(
-                    task_id=task_id,
-                    status="FAILED",
-                    outcome=f"Error: {str(e)[:40]}",
-                )
-            except Exception:
-                pass
-            # Mark handled to avoid tight retry loops on poisoned candidates.
-            try:
-                if issue_url:
-                    self.safety.state.mark_issue_handled(issue_url)
-            except Exception:
-                pass
-
-        return None
-
-    async def _run_repo_tests(self, repo_dir: Path) -> tuple[bool, str]:
-        """Detect and execute local test suite."""
+    async def _run_repo_tests(self, repo_dir):
         if not self.config.auto_test_verification:
-            return True, "Test verification disabled in config."
-
-        # Detect test framework (prefer explicit test configs over bare manifests).
-        cmd: Optional[list[str]] = None
-        if ((repo_dir / "pytest.ini").exists() or (repo_dir / "setup.cfg").exists()
-                or (repo_dir / "tests").is_dir() or (repo_dir / "test").is_dir()
-                or list(repo_dir.glob("test_*.py")) or list(repo_dir.glob("*_test.py"))):
-            cmd = ["pytest", "-q", "--maxfail=1"] if shutil.which("pytest") else ["python3", "-m", "unittest"]
-        elif (repo_dir / "pyproject.toml").exists() and shutil.which("pytest"):
-            # pyproject alone is weak evidence; only use pytest if it declares it.
-            try:
-                text = (repo_dir / "pyproject.toml").read_text(encoding="utf-8", errors="ignore")
-                if "pytest" in text or "test" in text:
-                    cmd = ["pytest", "-q", "--maxfail=1"]
-            except Exception:
-                pass
-        if cmd is None and (repo_dir / "package.json").exists() and shutil.which("npm"):
-            cmd = ["npm", "test", "--", "--passWithNoTests"]
-        if cmd is None and (repo_dir / "Cargo.toml").exists() and shutil.which("cargo"):
-            cmd = ["cargo", "test"]
-        if cmd is None and (repo_dir / "go.mod").exists() and shutil.which("go"):
-            cmd = ["go", "test", "./..."]
-        if cmd is None:
-            return True, "No standard test runner configuration detected."
-
+            return False, "Test verification cannot be disabled for submission"
+        command = detect_test_command(repo_dir)
+        if not command:
+            return False, "No executable test suite was detected"
         try:
-            res = await asyncio.to_thread(
-                _run_subprocess,
-                cmd,
-                repo_dir,
-                180.0,
-            )
-            stdout_txt = res.stdout or ""
-            stderr_txt = f"\n{res.stderr}" if res.stderr else ""
-            output = f"{stdout_txt}{stderr_txt}"
-            return (res.returncode == 0), output.strip()[:8000] or "(empty test output)"
-        except subprocess.TimeoutExpired:
-            return False, "Test execution timed out."
-        except Exception as e:
-            return False, f"Test execution error: {e}"
+            result = await self.sandbox.run(command, repo_dir)
+            output = (result.stdout + "\n" + result.stderr).strip()
+            passed = result.returncode == 0 and tests_executed(command, output)
+            return passed, output[:16000] or "No tests produced evidence"
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            return False, str(error) if isinstance(error, RuntimeError) else f"Test execution failed ({type(error).__name__})"
+
+    async def solve_issue(self, candidate):
+        repo = candidate.get("repo", "")
+        number = candidate.get("issue_number")
+        if not REPO_NAME.fullmatch(repo) or type(number) is not int or number < 1:
+            return None
+        owner, name = repo.split("/")
+        issue_url = f"https://github.com/{repo}/issues/{number}"
+        if candidate.get("url") != issue_url:
+            return None
+        if self.config.dry_run and issue_url in self._dry_run_issues:
+            return None
+        # Dry-run does not touch eligibility history or reserve live submission capacity.
+        claimed = False
+        if not self.config.dry_run:
+            claimed = self.safety.state.claim_issue(issue_url, self.config.max_prs_per_day)
+            if not claimed:
+                return None
+        task_id = self.tasks.create_task("SOLVER", f"Fix #{number}: {candidate.get('title', '')}", repo, issue_url, {"dry_run": self.config.dry_run, "issue_number": number})
+        try:
+            eligible, reason = await self.client.check_issue_eligibility(owner, name, number)
+            if not eligible:
+                raise RuntimeError(reason)
+            metadata = await self.client.get_repository(owner, name)
+            base = metadata["default_branch"]
+            self.config.repos_dir.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix=f"{owner}_{name}_{number}_", dir=self.config.repos_dir) as directory:
+                work = Path(directory)
+                self.status.update_hunter("SOLVING", f"Repairing {repo}#{number}", active_repo=repo)
+                await self._git(work, "clone", "--depth", "20", "--branch", base, f"https://github.com/{repo}.git", ".")
+                branch = f"codex/fix-issue-{number}"
+                await self._git(work, "checkout", "-b", branch)
+                await self._git(work, "config", "user.name", self.config.github_username or "GitHub Agent")
+                await self._git(work, "config", "user.email", f"{self.config.github_username or 'agent'}@users.noreply.github.com")
+                guidelines = []
+                for file in ("AGENTS.md", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", ".github/CONTRIBUTING.md", ".github/PULL_REQUEST_TEMPLATE.md", ".github/pull_request_template.md"):
+                    path = _safe_target(work, file)
+                    if path.is_file():
+                        guidelines.append(f"{file}:\n{path.read_text(errors='replace')[:10000]}")
+                guidelines = "\n\n".join(guidelines)
+                if re.search(r"\bCLA\b|contributor license agreement", guidelines, re.IGNORECASE) and repo not in self.config.accepted_cla_repos:
+                    raise RuntimeError("Repository requires CLA acceptance; configure ACCEPTED_CLA_REPOS after completing it")
+                success, baseline = await self._run_repo_tests(work)
+                if not success:
+                    raise RuntimeError("Baseline tests failed or isolated test evidence is unavailable: " + baseline[:300])
+                patch = await self.ai.generate_code_patch(repo, candidate.get("title", ""), candidate.get("body", ""),
+                    _summarize_repo_tree(work), source_context=self._source_context(work, candidate), guidelines=guidelines, test_output=baseline)
+                if patch.get("can_fix") is not True or type(patch.get("confidence")) not in (float, int) or not 0.85 <= patch["confidence"] <= 1:
+                    raise RuntimeError("Model did not provide a sufficiently confident repair")
+                repair_file = patch.get("target_file")
+                if not isinstance(repair_file, str) or Path(repair_file).suffix not in SOURCE_EXTENSIONS or _is_test_path(repair_file):
+                    raise ValueError("Repair must modify a supported source file and preserve existing tests")
+                regression = patch.get("regression_tests")
+                if not isinstance(regression, list) or not 1 <= len(regression) <= 5:
+                    raise RuntimeError("A reproducible regression test is required")
+                test_files = []
+                for test in regression:
+                    relative = test.get("target_file", "")
+                    if not isinstance(relative, str) or not _is_test_path(relative):
+                        raise ValueError("Regression test path must identify a test file")
+                    target = _safe_target(work, relative)
+                    if target.exists():
+                        raise ValueError("Regression tests must be new files to preserve the existing suite")
+                    test_files.append(self._apply_patch(work, test))
+                if patch.get("target_file") in test_files:
+                    raise ValueError("Repair must not modify its regression test")
+                red_success, red_output = await self._run_repo_tests(work)
+                if red_success:
+                    raise RuntimeError("Regression test did not reproduce the defect")
+                # A test-runtime error is not a reproduced defect.
+                if not re.search(r"FAILED|FAIL|failed|AssertionError|panic|not ok", red_output):
+                    raise RuntimeError("Regression test failed without reproducible assertion evidence")
+                changed_file = self._apply_patch(work, patch)
+                green_success, green_output = await self._run_repo_tests(work)
+                if not green_success:
+                    raise RuntimeError("Patched regression suite failed: " + green_output[:300])
+                await self._git(work, "add", "--", changed_file, *test_files)
+                diff = await self._git(work, "diff", "--cached")
+                if not diff.strip():
+                    raise RuntimeError("Repair produced an empty diff")
+                await self._git(work, "commit", "-s", "-m", f"fix: resolve issue #{number}")
+                final_success, final_output = await self._run_repo_tests(work)
+                dirty = (await self._git(work, "diff", "HEAD", "--")).strip()
+                untracked = (await self._git(work, "ls-files", "--others", "--exclude-standard")).splitlines()
+                unsubmitted_source = any(Path(file).suffix in SOURCE_EXTENSIONS for file in untracked)
+                if not final_success or dirty or unsubmitted_source:
+                    raise RuntimeError("The exact commit could not be verified")
+                test_evidence = f"Baseline:\n{baseline}\n\nRegression before fix:\n{red_output}\n\nCommitted repair:\n{final_output}"
+                pr = await self.ai.generate_pr_metadata(candidate.get("title", ""), candidate.get("body", ""), number, diff[:20000], test_evidence, guidelines=guidelines)
+                pr_body = pr.get("body", "") + f"\n\n### Executed verification\n```text\n{test_evidence[-12000:]}\n```\n\nCloses #{number}\n"
+                if not self.config.dry_run:
+                    eligible, reason = await self.client.check_issue_eligibility(owner, name, number)
+                    if not eligible:
+                        raise RuntimeError(reason)
+                    quota = await self.client.get_rate_limit()
+                    safe, reason = self.safety.check_rate_limit(quota.get("remaining"))
+                    if not safe:
+                        raise RuntimeError(reason)
+                    fork = await self.client.ensure_fork(owner, name)
+                    fork_owner = fork["owner"]["login"]
+                    if not REPO_NAME.fullmatch(f"{fork_owner}/{name}"):
+                        raise RuntimeError("Invalid fork owner")
+                    await self._git(work, "remote", "add", "submission", f"https://github.com/{fork_owner}/{name}.git")
+                    await self._git(work, "push", "submission", f"HEAD:refs/heads/{branch}", authenticated=True)
+                    head = f"{fork_owner}:{branch}"
+                else:
+                    head = f"{self.config.github_username}:{branch}"
+                result = await self.client.create_pull_request(owner, name, pr.get("title") or f"fix: resolve issue #{number}", pr_body, head, base, draft=True)
+                if not result or not result.get("html_url"):
+                    raise RuntimeError("PR creation failed")
+                url = result["html_url"]
+                if not self.config.dry_run:
+                    self.safety.state.record_pr_submission(repo, issue_url, url)
+                    self.safety.state.mark_issue_handled(issue_url)
+                else:
+                    self._dry_run_issues.add(issue_url)
+                self.tasks.complete_task(task_id, "COMPLETED", "Verified repair simulated" if self.config.dry_run else "Draft PR created",
+                    {"pr_url": url, "test_output": test_evidence, "diff_preview": diff, "dry_run": self.config.dry_run})
+                return {"pr_url": url, "issue_url": issue_url, "test_output": test_evidence, "dry_run": self.config.dry_run}
+        except asyncio.CancelledError:
+            self.tasks.complete_task(task_id, "CANCELLED", "Execution cancelled")
+            raise
+        except Exception as error:
+            message = str(error) if isinstance(error, (ValueError, RuntimeError)) else f"Repair failed ({type(error).__name__})"
+            self.tasks.complete_task(task_id, "FAILED", message)
+            self.status.log_event("ERROR", message)
+            return None
+        finally:
+            if claimed:
+                self.safety.state.release_issue(issue_url)

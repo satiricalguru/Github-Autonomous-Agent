@@ -27,6 +27,9 @@ github-agent = "src.cli:main"
 where = ["."]
 include = ["src*"]
 
+[tool.setuptools.package-data]
+src = ["_frontend/index.html", "_frontend/css/*.css", "_frontend/dist/*.js", "_frontend/dist/components/*.js"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
@@ -39,5 +42,4 @@ search-path = [".", "src"]
 
 [tool.pyright]
 extraPaths = [".", "src"]
-
 

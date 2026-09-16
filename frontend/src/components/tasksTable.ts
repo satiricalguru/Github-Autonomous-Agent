@@ -1,3 +1,4 @@
+import { escapeHtml } from '../dom.js';
 /**
  * Tasks Table Component
  */
@@ -7,6 +8,7 @@ import { sound } from '../audio.js';
 import { AgentTask } from '../types.js';
 
 export class TasksTable {
+  private lastPayload = "";
   private containerEl: HTMLElement | null = null;
   private searchInputEl: HTMLInputElement | null = null;
   private filterPillsEl: HTMLElement | null = null;
@@ -46,6 +48,10 @@ export class TasksTable {
   private render(tasks: AgentTask[], filter: string, query: string): void {
     if (!this.containerEl) return;
 
+    const payload = JSON.stringify([tasks, filter, query]);
+    if (payload === this.lastPayload) return;
+    this.lastPayload = payload;
+    const focusedId = (document.activeElement as HTMLElement)?.dataset.taskId;
     let filtered = tasks;
     if (filter !== 'all') {
       filtered = filtered.filter(t => t.status === filter);
@@ -77,38 +83,45 @@ export class TasksTable {
       else if (task.status === 'failed') badgeClass = 'badge-error';
 
       return `
-        <tr data-task-id="${task.id}">
+        <tr data-task-id="${escapeHtml(task.id)}" tabindex="0" role="button" aria-label="Inspect task ${escapeHtml(task.id)}">
           <td style="font-family:monospace; font-weight:600; color:var(--accent-blue);">
-            ${task.id}
+            ${escapeHtml(task.id)}
           </td>
           <td>
-            <span style="font-weight:600;">${task.type}</span>
+            <span style="font-weight:600;">${escapeHtml(task.type)}</span>
           </td>
           <td style="max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-            ${task.target || '-'}
+            ${escapeHtml(task.target || '-')}
           </td>
           <td>
             <span class="badge ${badgeClass}">
               <span class="status-dot ${task.status === 'running' ? 'pulse' : ''}"></span>
-              ${task.status}
+              ${escapeHtml(task.status)}
             </span>
           </td>
           <td style="color:var(--text-dim); font-size:0.75rem;">
-            ${task.created_at || 'Recently'}
+            ${escapeHtml(task.created_at || 'Recently')}
           </td>
         </tr>
       `;
     }).join('');
 
+    if (focusedId) Array.from(this.containerEl.querySelectorAll<HTMLElement>("tr[data-task-id]")).find(row => row.dataset.taskId === focusedId)?.focus();
+
     // Add click listeners to rows
     this.containerEl.querySelectorAll('tr[data-task-id]').forEach(row => {
-      row.addEventListener('click', () => {
+      const open = () => {
         const taskId = row.getAttribute('data-task-id');
         const task = tasks.find(t => t.id === taskId);
         if (task) {
           sound.playClick();
           store.setState({ selectedTask: task, isDrawerOpen: true });
         }
+      };
+      row.addEventListener('click', open);
+      row.addEventListener('keydown', (event) => {
+        const e = event as KeyboardEvent;
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
       });
     });
   }

@@ -1,0 +1,25 @@
+{
+  "build_returncode": 0,
+  "contains_frontend": false,
+  "files": [
+    "github_autonomous_agent-0.1.0.dist-info/licenses/LICENSE",
+    "src/__init__.py",
+    "src/ai_engine.py",
+    "src/cli.py",
+    "src/config.py",
+    "src/github_client.py",
+    "src/inbox_manager.py",
+    "src/issue_hunter.py",
+    "src/orchestrator.py",
+    "src/pr_solver.py",
+    "src/safety_guardrails.py",
+    "src/status_tracker.py",
+    "src/task_tracker.py",
+    "src/web_dashboard.py",
+    "github_autonomous_agent-0.1.0.dist-info/METADATA",
+    "github_autonomous_agent-0.1.0.dist-info/WHEEL",
+    "github_autonomous_agent-0.1.0.dist-info/entry_points.txt",
+    "github_autonomous_agent-0.1.0.dist-info/top_level.txt",
+    "github_autonomous_agent-0.1.0.dist-info/RECORD"
+  ]
+}

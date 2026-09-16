@@ -1,12 +1,15 @@
+import { githubPrUrl, escapeHtml } from '../dom.js';
 /**
  * Task Details Inspection Drawer
  */
 
 import { store } from '../state.js';
-import { api } from '../api.js';
 import { sound } from '../audio.js';
 
 export class TaskDrawer {
+  private previousFocus: HTMLElement | null = null;
+  private opened = false;
+  private lastPayload = "";
   private backdropEl: HTMLElement | null = null;
   private panelEl: HTMLElement | null = null;
 
@@ -22,6 +25,16 @@ export class TaskDrawer {
       this.backdropEl.addEventListener('click', () => this.close());
     }
 
+    this.panelEl?.setAttribute('role', 'dialog');
+    this.panelEl?.setAttribute('aria-modal', 'true');
+    this.panelEl?.setAttribute('aria-labelledby', 'drawerTaskTitle');
+    this.panelEl?.addEventListener('keydown', event => {
+      if (event.key !== 'Tab') return;
+      const elements = Array.from(this.panelEl!.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input, [tabindex="0"]'));
+      const first = elements[0], last = elements[elements.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    });
     const closeBtn = document.getElementById('drawerCloseBtn');
     if (closeBtn) {
       closeBtn.addEventListener('click', () => this.close());
@@ -30,12 +43,21 @@ export class TaskDrawer {
     store.subscribe((state) => {
       if (this.backdropEl && this.panelEl) {
         if (state.isDrawerOpen && state.selectedTask) {
-          this.renderTask(state.selectedTask);
+          const task = state.status?.tasks.find(t => t.id === state.selectedTask?.id) || state.selectedTask;
+          if (JSON.stringify(task) !== this.lastPayload) {
+            this.renderTask(task);
+            this.lastPayload = JSON.stringify(task);
+          }
+          if (!this.opened) this.previousFocus = document.activeElement as HTMLElement;
           this.backdropEl.classList.add('open');
           this.panelEl.classList.add('open');
+          if (!this.opened) document.getElementById('drawerCloseBtn')?.focus();
+          this.opened = true;
         } else {
           this.backdropEl.classList.remove('open');
           this.panelEl.classList.remove('open');
+          if (this.opened) this.previousFocus?.focus();
+          this.opened = false;
         }
       }
     });
@@ -54,13 +76,14 @@ export class TaskDrawer {
     titleEl.textContent = `Task: ${task.id}`;
 
     let prSection = '';
-    if (task.pr_url) {
+    const prUrl = githubPrUrl(task.pr_url);
+    if (prUrl && !task.details?.dry_run) {
       prSection = `
         <div class="drawer-section">
           <div class="drawer-section-title">Created Pull Request</div>
-          <a href="${task.pr_url}" target="_blank" rel="noopener noreferrer" class="btn btn-primary" style="display:inline-flex; width:fit-content; gap:0.5rem; text-decoration:none;">
+          <a href="${escapeHtml(prUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-primary" style="display:inline-flex; width:fit-content; gap:0.5rem; text-decoration:none;">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
-            Open PR #${task.pr_url.split('/').pop()} on GitHub
+            Open PR #${escapeHtml(prUrl.split('/').pop())} on GitHub
           </a>
         </div>
       `;
@@ -88,26 +111,14 @@ export class TaskDrawer {
       `;
     }
 
-    let inboxAction = '';
-    if (task.type === 'inbox_notification' && task.details?.thread_id) {
-      inboxAction = `
-        <div class="drawer-section">
-          <div class="drawer-section-title">Inbox Actions</div>
-          <button id="drawerMarkDoneBtn" class="btn btn-sm" style="background:rgba(16,185,129,0.15); color:#10b981; border:1px solid rgba(16,185,129,0.3); width:fit-content;">
-            ✓ Mark Notification as Done in GitHub
-          </button>
-        </div>
-      `;
-    }
-
     bodyEl.innerHTML = `
       <div class="drawer-section">
         <div class="drawer-section-title">Overview</div>
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem; font-size:0.82rem;">
-          <div><span style="color:var(--text-dim);">Type:</span> <strong style="color:var(--text-main);">${task.type}</strong></div>
-          <div><span style="color:var(--text-dim);">Status:</span> <span class="badge badge-${task.status === 'completed' ? 'success' : task.status === 'failed' ? 'error' : 'active'}">${task.status}</span></div>
-          <div><span style="color:var(--text-dim);">Created:</span> ${task.created_at || 'Just now'}</div>
-          <div><span style="color:var(--text-dim);">Completed:</span> ${task.completed_at || '-'}</div>
+          <div><span style="color:var(--text-dim);">Type:</span> <strong style="color:var(--text-main);">${escapeHtml(task.type)}</strong></div>
+          <div><span style="color:var(--text-dim);">Status:</span> <span class="badge badge-${task.status === 'completed' ? 'success' : task.status === 'failed' ? 'error' : 'active'}">${escapeHtml(task.status)}</span></div>
+          <div><span style="color:var(--text-dim);">Created:</span> ${escapeHtml(task.created_at || 'Just now')}</div>
+          <div><span style="color:var(--text-dim);">Completed:</span> ${escapeHtml(task.completed_at || '-')}</div>
         </div>
       </div>
 
@@ -118,7 +129,6 @@ export class TaskDrawer {
         </div>
       </div>
 
-      ${inboxAction}
       ${prSection}
       ${diffSection}
       ${errorSection}
@@ -129,22 +139,6 @@ export class TaskDrawer {
       </div>
     `;
 
-    const markDoneBtn = document.getElementById('drawerMarkDoneBtn');
-    if (markDoneBtn && task.details?.thread_id) {
-      markDoneBtn.addEventListener('click', async () => {
-        sound.playClick();
-        markDoneBtn.textContent = 'Marking done...';
-        try {
-          await api.markInboxDone(task.details.thread_id);
-          sound.playSuccess();
-          markDoneBtn.textContent = '✓ Marked as Done in GitHub';
-          (markDoneBtn as HTMLButtonElement).disabled = true;
-        } catch (err: any) {
-          sound.playAlert();
-          markDoneBtn.textContent = 'Failed to mark done';
-        }
-      });
-    }
   }
 
   private escapeHtml(str: string): string {

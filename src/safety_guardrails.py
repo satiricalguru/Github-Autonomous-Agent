@@ -54,77 +54,110 @@ def atomic_write_json(file_path: Path, data: Any):
 
 
 class StateStore:
-    """Persistent state manager to avoid duplicates and track activity."""
+    """SQLite transactions are authoritative; JSON is a compatibility snapshot."""
 
     def __init__(self, state_file: Optional[Path] = None):
+        import sqlite3
         self.state_file = state_file or config.state_file
-        self.handled_notifications: Set[str] = set()
-        self.handled_issues: Set[str] = set()
-        self.submitted_prs: List[Dict[str, Any]] = []
+        self.db_file = self.state_file.with_suffix(".sqlite3")
+        self.db_file.parent.mkdir(parents=True, exist_ok=True)
+        self.handled_notifications = set()
+        self.handled_issues = set()
+        self.submitted_prs = []
+        with sqlite3.connect(self.db_file, timeout=15) as db:
+            db.execute("PRAGMA journal_mode=WAL")
+            db.execute("CREATE TABLE IF NOT EXISTS handled (kind TEXT, value TEXT, PRIMARY KEY(kind,value))")
+            db.execute("CREATE TABLE IF NOT EXISTS prs (url TEXT PRIMARY KEY, repo TEXT, issue TEXT, timestamp REAL)")
+            db.execute("CREATE TABLE IF NOT EXISTS claims (issue TEXT PRIMARY KEY, expires REAL)")
+            db.execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT)")
+            db.execute("BEGIN IMMEDIATE")
+            if not db.execute("SELECT 1 FROM metadata WHERE key='migrated'").fetchone():
+                if self.state_file.exists():
+                    # A corrupt history must not silently reset submission limits.
+                    data = json.loads(self.state_file.read_text())
+                    simulated = {pr.get("issue_url") for pr in data.get("submitted_prs", []) if str(pr.get("pr_url", "")).endswith("mock-dry-run")}
+                    real = {pr.get("issue_url") for pr in data.get("submitted_prs", []) if not str(pr.get("pr_url", "")).endswith("mock-dry-run")}
+                    for kind, key in (("notification", "handled_notifications"), ("issue", "handled_issues")):
+                        db.executemany("INSERT OR IGNORE INTO handled VALUES (?,?)", [(kind, str(v)) for v in data.get(key, []) if kind != "issue" or v not in simulated - real])
+                    for pr in data.get("submitted_prs", []):
+                        if not str(pr.get("pr_url", "")).endswith("mock-dry-run"):
+                            db.execute("INSERT OR IGNORE INTO prs VALUES (?,?,?,?)", (pr.get("pr_url", ""), pr.get("repo", ""), pr.get("issue_url", ""), pr.get("timestamp", 0)))
+                db.execute("INSERT INTO metadata VALUES ('migrated','1')")
         self._load()
 
+    def _connect(self):
+        import sqlite3
+        return sqlite3.connect(self.db_file, timeout=15)
+
     def _load(self):
-        if not self.state_file.exists():
-            return
-        try:
-            with open(self.state_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                self.handled_notifications = set(data.get("handled_notifications", []))
-                self.handled_issues = set(data.get("handled_issues", []))
-                self.submitted_prs = data.get("submitted_prs", [])
-        except Exception as e:
-            logger.warning(f"Failed to load state file {self.state_file}: {e}")
-            # Preserve corrupt file for forensics instead of silently dropping it.
-            try:
-                backup = self.state_file.with_suffix(".corrupt.bak")
-                if not backup.exists():
-                    self.state_file.replace(backup)
-            except Exception:
-                pass
+        with self._connect() as db:
+            rows = db.execute("SELECT kind,value FROM handled").fetchall()
+            self.handled_notifications = {v for k, v in rows if k == "notification"}
+            self.handled_issues = {v for k, v in rows if k == "issue"}
+            self.submitted_prs = [{"pr_url": u, "repo": r, "issue_url": i, "timestamp": t,
+                "created_at": datetime.fromtimestamp(t, timezone.utc).isoformat()}
+                for u,r,i,t in db.execute("SELECT url,repo,issue,timestamp FROM prs ORDER BY timestamp")]
 
     def save(self):
-        try:
-            atomic_write_json(
-                self.state_file,
-                {
-                    "handled_notifications": list(self.handled_notifications),
-                    "handled_issues": list(self.handled_issues),
-                    "submitted_prs": self.submitted_prs,
-                    "last_updated": datetime.now(timezone.utc).isoformat(),
-                },
-            )
-        except Exception as e:
-            logger.error(f"Failed to save state file {self.state_file}: {e}")
+        self._load()
+        atomic_write_json(self.state_file, {"handled_notifications": sorted(self.handled_notifications),
+            "handled_issues": sorted(self.handled_issues), "submitted_prs": self.submitted_prs,
+            "last_updated": datetime.now(timezone.utc).isoformat()})
 
-    def is_notification_handled(self, thread_id: str) -> bool:
+    def is_notification_handled(self, thread_id):
+        self._load()
         return str(thread_id) in self.handled_notifications
 
-    def mark_notification_handled(self, thread_id: str):
-        self.handled_notifications.add(str(thread_id))
+    def mark_notification_handled(self, thread_id):
+        with self._connect() as db:
+            db.execute("INSERT OR IGNORE INTO handled VALUES ('notification',?)", (str(thread_id),))
         self.save()
 
-    def is_issue_handled(self, issue_url: str) -> bool:
-        return issue_url in self.handled_issues
+    def is_issue_handled(self, issue_url):
+        self._load()
+        return str(issue_url) in self.handled_issues
 
-    def mark_issue_handled(self, issue_url: str):
-        self.handled_issues.add(issue_url)
+    def mark_issue_handled(self, issue_url):
+        with self._connect() as db:
+            db.execute("INSERT OR IGNORE INTO handled VALUES ('issue',?)", (str(issue_url),))
         self.save()
 
-    def record_pr_submission(self, repo: str, issue_url: str, pr_url: str):
-        self.submitted_prs.append(
-            {
-                "repo": repo,
-                "issue_url": issue_url,
-                "pr_url": pr_url,
-                "timestamp": time.time(),
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            }
-        )
+    def record_pr_submission(self, repo, issue_url, pr_url):
+        if str(pr_url).endswith("mock-dry-run"):
+            return
+        with self._connect() as db:
+            db.execute("INSERT OR IGNORE INTO prs VALUES (?,?,?,?)", (pr_url, repo, issue_url, time.time()))
+            db.execute("DELETE FROM claims WHERE issue=?", (issue_url,))
         self.save()
 
-    def get_recent_pr_count(self, hours: int = 24) -> int:
-        cutoff = time.time() - (hours * 3600)
-        return sum(1 for pr in self.submitted_prs if pr.get("timestamp", 0) >= cutoff)
+    def get_recent_pr_count(self, hours=24):
+        with self._connect() as db:
+            return db.execute("SELECT count(*) FROM prs WHERE timestamp>=?", (time.time()-hours*3600,)).fetchone()[0]
+
+    def claim_issue(self, issue_url, max_prs, reserve_slot=True):
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("DELETE FROM claims WHERE expires<?", (time.time(),))
+            recent = db.execute("SELECT count(*) FROM prs WHERE timestamp>=?", (time.time()-86400,)).fetchone()[0]
+            reserved = db.execute("SELECT count(*) FROM claims").fetchone()[0]
+            if reserve_slot and recent + reserved >= max_prs:
+                return False
+            if db.execute("SELECT 1 FROM handled WHERE kind='issue' AND value=?", (issue_url,)).fetchone():
+                return False
+            if db.execute("SELECT 1 FROM claims WHERE issue=?", (issue_url,)).fetchone():
+                return False
+            # Bound exceeds four maximum test runs, two model calls, and git work.
+            db.execute("INSERT INTO claims VALUES (?,?)", (issue_url, time.time()+4*3600))
+            return True
+
+    def release_issue(self, issue_url):
+        with self._connect() as db:
+            db.execute("DELETE FROM claims WHERE issue=?", (issue_url,))
+
+    def clear_orphaned_claims(self):
+        """Call only while holding the workspace execution lease, before new work."""
+        with self._connect() as db:
+            db.execute("DELETE FROM claims")
 
 
 class SafetyGuardrails:
@@ -161,8 +194,10 @@ class SafetyGuardrails:
 
         return True, "OK"
 
-    def check_rate_limit(self, remaining: int) -> tuple[bool, str]:
+    def check_rate_limit(self, remaining: Optional[int]) -> tuple[bool, str]:
         """Verify API rate limit threshold."""
+        if remaining is None:
+            return False, "GitHub quota unavailable; execution blocked."
         if remaining < self.config.min_rate_limit_remaining:
             return (
                 False,

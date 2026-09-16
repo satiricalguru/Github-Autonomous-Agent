@@ -4,7 +4,7 @@
   "private": true,
   "description": "Interactive, premium mission control dashboard for Autonomous GitHub Agent",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node sync-assets.mjs",
     "watch": "tsc --watch"
   },
   "devDependencies": {

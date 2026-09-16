@@ -4,7 +4,8 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Literal
+from pydantic import ConfigDict
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
@@ -64,81 +65,79 @@ def get_gh_cli_username() -> Optional[str]:
         return None
 
 
-def detect_active_ai_model() -> str:
-    """Detects active AI model from environment or Antigravity IDE session."""
+def detect_active_ai_model(prefer_ide=False) -> str:
+    """Environment selection is stable; IDE sync is opt-in and conversation-bound."""
+    import json
+    import re
     env_model = os.getenv("GEMINI_MODEL") or os.getenv("MODEL_NAME")
-    if env_model:
+    if env_model and not prefer_ide:
         return env_model
-
-    conv_id = os.getenv("ANTIGRAVITY_CONVERSATION_ID")
-    transcript = None
-    if conv_id and len(conv_id) < 256 and "/" not in conv_id and "\\" not in conv_id:
-        cand = (
-            Path.home()
-            / ".gemini"
-            / "antigravity-ide"
-            / "brain"
-            / conv_id
-            / ".system_generated"
-            / "logs"
-            / "transcript.jsonl"
-        )
-        if cand.exists():
-            transcript = cand
-
-    # Fallback: scan brain directory for most recently modified conversation transcript
-    if transcript is None:
-        brain_dir = Path.home() / ".gemini" / "antigravity-ide" / "brain"
-        if brain_dir.exists():
-            candidates = sorted(
-                brain_dir.glob("*/.system_generated/logs/transcript.jsonl"),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )
-            if candidates:
-                transcript = candidates[0]
-
-    if transcript and transcript.exists():
+    conv_id = os.getenv("ANTIGRAVITY_CONVERSATION_ID", "")
+    if conv_id and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", conv_id):
+        path = Path.home() / ".gemini/antigravity-ide/brain" / conv_id / ".system_generated/logs/transcript.jsonl"
         try:
-            import re
-
-            with open(transcript, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-
-            # Scan backwards from the latest entries to get the most recent model selection
+            with path.open("rb") as file:
+                file.seek(max(0, path.stat().st_size - 1024 * 1024))
+                lines = file.read().decode(errors="replace").splitlines()
             for line in reversed(lines):
-                if len(line) > 50000:
-                    continue
-                m = re.search(r"Model Selection\` from \S+ to (.+?)\.\s*No need", line)
-                if m:
-                    raw = m.group(1).strip()
-                    if "3.8" in raw:
-                        return "gemini-3.8-flash"
-                    elif "3.7" in raw:
-                        return "gemini-3.7-flash"
-                    elif "3.6" in raw:
-                        return "gemini-3.6-flash"
-                    elif "3.1" in raw and "pro" in raw.lower():
-                        return "gemini-3.1-pro"
-                    elif "sonnet" in raw.lower():
-                        return "claude-sonnet-4.6"
-                    elif "opus" in raw.lower():
-                        return "claude-opus-4.6"
-                    elif "gpt-oss" in raw.lower() or "120b" in raw.lower():
-                        return "gpt-oss-120b"
-                    elif "2.5" in raw and "pro" in raw.lower():
-                        return "gemini-2.5-pro"
-                    elif "2.5" in raw:
-                        return "gemini-2.5-flash"
-                    return raw.lower().replace(" ", "-")
-        except Exception:
+                try:
+                    text = json.dumps(json.loads(line), ensure_ascii=False).replace("\\", "")
+                except ValueError:
+                    text = line
+                match = re.search(r"Model Selection[`]? from .*? to (.+?)\.\s*No need", text)
+                if match:
+                    raw = match[1].lower()
+                    for family in ("gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.1-pro"):
+                        if family.split("-")[1] in raw:
+                            return family + ("-low" if "low" in raw else "-medium" if "medium" in raw else "-high")
+                    if "sonnet" in raw:
+                        return "claude-sonnet-4-6"
+                    if "opus" in raw:
+                        return "claude-opus-4-6-thinking"
+                    if "gpt-oss" in raw:
+                        return "gpt-oss-120b-medium"
+        except OSError:
             pass
-
-    return "gemini-3.8-flash"
+    return env_model or "gemini-3.8-flash"
 
 
 class AgentConfig(BaseModel):
     """Configuration settings for the GitHub Agent."""
+
+    model_config = ConfigDict(validate_assignment=True, validate_default=True, extra="forbid")
+    ai_provider: Literal["auto", "antigravity", "gemini", "anthropic", "openai"] = Field(default_factory=lambda: os.getenv("AI_PROVIDER", "auto"))
+    anthropic_api_key: Optional[str] = Field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY"))
+    openai_api_key: Optional[str] = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY"))
+    openai_base_url: str = Field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"))
+    antigravity_cli: str = Field(default_factory=lambda: os.getenv("ANTIGRAVITY_CLI", "agy"))
+    sync_ide_model: bool = Field(default_factory=lambda: os.getenv("SYNC_IDE_MODEL", "false").lower() == "true")
+    sandbox_image: Optional[str] = Field(default_factory=lambda: os.getenv("SANDBOX_IMAGE"))
+    allow_host_tests: bool = Field(default_factory=lambda: os.getenv("ALLOW_HOST_TESTS", "false").lower() == "true")
+    test_timeout: int = Field(default=180, ge=10, le=1800)
+    provider_timeout: int = Field(default=300, ge=10, le=1800)
+    accepted_cla_repos: List[str] = Field(default_factory=lambda: [v.strip() for v in os.getenv("ACCEPTED_CLA_REPOS", "").split(",") if v.strip()])
+
+    @property
+    def settings_file(self) -> Path:
+        return self.scratch_dir / "settings.json"
+
+    def public_settings(self) -> dict:
+        keys = ("model_name", "ai_provider", "sync_ide_model", "dry_run", "inbox_poll_interval",
+                "issue_hunt_interval", "max_concurrent_tasks", "target_languages", "target_labels", "min_repo_stars")
+        return {key: getattr(self, key) for key in keys}
+
+    def save_settings(self):
+        from .safety_guardrails import atomic_write_json
+        atomic_write_json(self.settings_file, self.public_settings())
+
+    def load_settings(self):
+        import json
+        if self.settings_file.exists():
+            data = json.loads(self.settings_file.read_text())
+            checked = type(self).model_validate({**self.model_dump(), **data})
+            for key in self.public_settings():
+                setattr(self, key, getattr(checked, key))
+
 
     gemini_api_key: Optional[str] = Field(
         default_factory=lambda: os.getenv("GEMINI_API_KEY")
@@ -148,16 +147,13 @@ class AgentConfig(BaseModel):
     @property
     def model_display_name(self) -> str:
         name = self.model_name.lower()
-        if "3.8" in name:
-            return "Gemini 3.8 Flash (High Reasoning)"
-        elif "3.7" in name:
-            return "Gemini 3.7 Flash (High Reasoning)"
-        elif "3.6" in name:
-            return "Gemini 3.6 Flash"
-        elif "3.1" in name and "pro" in name:
-            return "Gemini 3.1 Pro"
-        elif "sonnet" in name:
-            return "Claude Sonnet 4.6 (Thinking)"
+        for version in ("3.8", "3.7", "3.6", "3.1"):
+            if version in name and "gemini" in name:
+                family = "Pro" if "pro" in name else "Flash"
+                level = next((v.title() for v in ("high", "medium", "low") if name.endswith("-" + v)), None)
+                return f"Gemini {version} {family}" + (f" ({level} Reasoning)" if level else "")
+        if "sonnet" in name:
+            return "Claude Sonnet 4.6"
         elif "opus" in name:
             return "Claude Opus 4.6 (Thinking)"
         elif "gpt-oss" in name or "120b" in name:
@@ -170,27 +166,9 @@ class AgentConfig(BaseModel):
 
     def update(self, **kwargs):
         """Update runtime configuration fields safely with validation."""
-        for key, value in kwargs.items():
-            if not hasattr(self, key):
-                continue
-            # Coerce numeric interval/limit fields defensively.
-            if key in (
-                "inbox_poll_interval",
-                "issue_hunt_interval",
-                "max_concurrent_tasks",
-                "min_repo_stars",
-                "max_prs_per_day",
-                "min_rate_limit_remaining",
-            ):
-                try:
-                    value = int(value)
-                except (ValueError, TypeError):
-                    continue
-                if key in ("inbox_poll_interval", "issue_hunt_interval") and value < 5:
-                    continue
-                if key in ("max_concurrent_tasks", "max_prs_per_day") and value < 1:
-                    continue
-            setattr(self, key, value)
+        checked = type(self).model_validate({**self.model_dump(), **kwargs})
+        for key in kwargs:
+            setattr(self, key, getattr(checked, key))
     github_token: Optional[str] = Field(
         default_factory=lambda: os.getenv("GITHUB_TOKEN") or get_gh_cli_token()
     )
@@ -217,13 +195,13 @@ class AgentConfig(BaseModel):
 
     # Concurrency & Intervals (seconds)
     inbox_poll_interval: int = Field(
-        default_factory=lambda: _safe_int("INBOX_POLL_INTERVAL", 60, minimum=5)
+        default_factory=lambda: _safe_int("INBOX_POLL_INTERVAL", 60, minimum=5), ge=5, le=3600
     )
     issue_hunt_interval: int = Field(
-        default_factory=lambda: _safe_int("ISSUE_HUNT_INTERVAL", 300, minimum=5)
+        default_factory=lambda: _safe_int("ISSUE_HUNT_INTERVAL", 300, minimum=5), ge=5, le=7200
     )
     max_concurrent_tasks: int = Field(
-        default_factory=lambda: _safe_int("MAX_CONCURRENT_TASKS", 3, minimum=1)
+        default_factory=lambda: _safe_int("MAX_CONCURRENT_TASKS", 3, minimum=1), ge=1, le=10
     )
 
     # Issue Hunter Search Criteria
@@ -281,6 +259,11 @@ class AgentConfig(BaseModel):
 
     def model_post_init(self, __context):
         """Ensure directories exist (best-effort, never crash on read-only FS)."""
+        if "scratch_dir" in self.model_fields_set:
+            if "repos_dir" not in self.model_fields_set:
+                self.repos_dir = self.scratch_dir / "repos"
+            if "state_file" not in self.model_fields_set:
+                self.state_file = self.scratch_dir / "agent_state.json"
         try:
             self.scratch_dir.mkdir(parents=True, exist_ok=True)
             self.repos_dir.mkdir(parents=True, exist_ok=True)

@@ -8,11 +8,11 @@ set -eu -o pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Ensure dependencies are installed
-if ! python3 -c "import httpx, pydantic, rich, dotenv" &>/dev/null; then
-    echo "Installing required dependencies..."
-    python3 -m pip install -q "httpx>=0.27.0" "pydantic>=2.7.0" "rich>=13.7.0" "python-dotenv>=1.0.0"
+AGENT_PYTHON="${AGENT_PYTHON:-$SCRIPT_DIR/.venv/bin/python}"
+if [[ ! -x "$AGENT_PYTHON" ]]; then
+    echo "Create the project environment first: python3 -m venv .venv && .venv/bin/python -m pip install -e ."
+    exit 1
 fi
 
 # Execute CLI
-python3 -m src.cli "$@"
+exec "$AGENT_PYTHON" -m src.cli "$@"

@@ -1,0 +1,47 @@
+[
+  {
+    "query": "repo:fastapi/fastapi is:issue state:open no:assignee label:bug",
+    "status": 200,
+    "total_count": 0,
+    "error": null,
+    "incomplete_results": false
+  },
+  {
+    "query": "repo:fastapi/fastapi is:issue state:open no:assignee stars:>=1000000 label:bug",
+    "status": 200,
+    "total_count": 0,
+    "error": null,
+    "incomplete_results": false
+  },
+  {
+    "repo": "fastapi/fastapi",
+    "status": 200,
+    "actual_stargazers_count": 102367
+  },
+  {
+    "query": "repo:fastapi/fastapi is:issue state:open",
+    "status": 200,
+    "total_count": 1,
+    "sample_url": "https://github.com/fastapi/fastapi/issues/10370",
+    "error": null
+  },
+  {
+    "query": "repo:fastapi/fastapi is:issue state:open stars:>=1000000",
+    "status": 200,
+    "total_count": 0,
+    "sample_url": null,
+    "error": null
+  },
+  {
+    "query": "repo:fastapi/fastapi is:issue state:open stars:>=1000",
+    "status": 200,
+    "total_count": 0,
+    "error": null
+  },
+  {
+    "query": "repo:fastapi/fastapi is:issue state:open language:python",
+    "status": 200,
+    "total_count": 1,
+    "error": null
+  }
+]

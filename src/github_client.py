@@ -1,402 +1,241 @@
-"""Async GitHub API client with automatic gh CLI and REST support."""
-
+"""Authenticated GitHub REST/GraphQL transport with explicit failure states."""
 import asyncio
 import json
 import logging
 import shutil
-import subprocess
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
-from urllib.parse import urlencode
-import httpx
+from typing import Any, Optional
+from urllib.parse import urlparse
 
-if TYPE_CHECKING:
-    from .config import AgentConfig, config
-else:
-    try:
-        from .config import AgentConfig, config
-    except ImportError:
-        from config import AgentConfig, config
+import httpx
+from .config import AgentConfig, config
+from .process import run_process
 
 logger = logging.getLogger("github_agent.client")
 
 
-class GitHubClient:
-    """High-level async client for GitHub API using gh CLI or HTTP REST."""
+class GitHubAPIError(RuntimeError):
+    pass
 
+
+class GitHubClient:
     def __init__(self, agent_config: Optional[AgentConfig] = None):
         self.config = agent_config or config
         self.base_url = "https://api.github.com"
         self._has_gh = bool(shutil.which("gh"))
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client = None
 
-    async def __aenter__(self) -> "GitHubClient":
+    async def __aenter__(self):
         await self._ensure_client()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, *args):
         await self.close()
 
     async def _ensure_client(self):
         if self._client is None or self._client.is_closed:
-            headers = {
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-                "User-Agent": "Antigravity-GitHub-Agent/1.0",
-            }
+            headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
+                       "User-Agent": "Autonomous-GitHub-Agent/0.2"}
             if self.config.github_token:
                 headers["Authorization"] = f"Bearer {self.config.github_token}"
-
-            self._client = httpx.AsyncClient(
-                base_url=self.base_url,
-                headers=headers,
-                timeout=httpx.Timeout(15.0, connect=10.0),
-            )
+            self._client = httpx.AsyncClient(base_url=self.base_url, headers=headers, timeout=20, follow_redirects=False)
 
     async def close(self):
         if self._client and not self._client.is_closed:
             await self._client.aclose()
-            self._client = None
+        self._client = None
 
-    async def _run_command(
-        self, cmd: List[str], input_data: Optional[str] = None, timeout: float = 20.0
-    ) -> Optional[Tuple[int, str, str]]:
-        """Execute an external CLI command asynchronously using native asyncio subprocess."""
+    async def _run_command(self, cmd, input_data=None, timeout=20):
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.PIPE if input_data else None,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(input=input_data.encode("utf-8") if input_data else None),
-                timeout=timeout,
-            )
-            stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
-            stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
-            return (proc.returncode if proc.returncode is not None else 0), stdout, stderr
-        except Exception as e:
-            logger.warning(f"Command execution failed ({cmd[0] if cmd else ''}): {e}")
+            result = await run_process(cmd, timeout=timeout, input_data=input_data)
+            return result.returncode, result.stdout, result.stderr
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.warning("Command failed (%s): %s", cmd[0], type(error).__name__)
             return None
 
-    async def _run_gh_api(
-        self, endpoint: str, method: str = "GET", body: Optional[Dict[str, Any]] = None
-    ) -> Optional[Any]:
-        """Execute request via gh CLI."""
+    async def _run_gh_api(self, endpoint, method="GET", body=None):
         if not self._has_gh:
             return None
-
         cmd = ["gh", "api", endpoint, "-X", method]
-        if body:
-            cmd.extend(["--input", "-"])
-
-        input_data = json.dumps(body) if body else None
-
-        res = await self._run_command(cmd, input_data=input_data, timeout=20.0)
-        if res is not None:
-            returncode, stdout, stderr = res
-            if returncode == 0:
-                if stdout:
-                    try:
-                        return json.loads(stdout)
-                    except Exception:
-                        return stdout.strip()
-                return {}
-            elif returncode != 0:
-                logger.warning(f"gh api error on {endpoint}: {stderr.strip()}")
+        if body is not None:
+            cmd += ["--input", "-"]
+        result = await self._run_command(cmd, json.dumps(body) if body is not None else None)
+        if result and result[0] == 0:
+            return json.loads(result[1]) if result[1].strip() else {}
         return None
 
-    async def _request(
-        self, method: str, endpoint: str, **kwargs
-    ) -> httpx.Response:
-        if self._has_gh:
-            ep = endpoint
-            params = kwargs.get("params")
-            if params:
-                sep = "&" if "?" in ep else "?"
-                ep = f"{ep}{sep}{urlencode(params)}"
-            cli_data = await self._run_gh_api(
-                endpoint=ep, method=method, body=kwargs.get("json")
-            )
-            if cli_data is not None:
-                content = json.dumps(cli_data).encode("utf-8")
-                return httpx.Response(status_code=200, content=content)
-            return httpx.Response(status_code=500, content=b"{}")
-
+    async def _request(self, method, endpoint, **kwargs):
+        # gh auth is used for credential discovery, never as a lossy HTTP bridge.
+        url = self.base_url + endpoint if endpoint.startswith("/") else endpoint
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or parsed.netloc != "api.github.com":
+            raise ValueError("GitHub requests must stay on api.github.com")
         await self._ensure_client()
-        assert self._client is not None
-        url = endpoint if endpoint.startswith("http") else f"{self.base_url}{endpoint}"
-        # Exponential backoff on rate-limit / transient errors (REST path only).
-        delays = (1.0, 2.0, 4.0)
-        last_exc: Optional[Exception] = None
-        for attempt in range(len(delays) + 1):
+        attempts = 4 if method in ("GET", "HEAD") else 1
+        for attempt in range(attempts):
             try:
-                res = await self._client.request(method, url, **kwargs)
-            except httpx.HTTPError as e:
-                last_exc = e
-                if attempt < len(delays):
-                    await asyncio.sleep(delays[attempt])
-                    continue
-                raise
-            if res.status_code in (403, 429) and attempt < len(delays):
-                retry_after = res.headers.get("Retry-After")
-                try:
-                    wait = float(retry_after) if retry_after else delays[attempt]
-                except ValueError:
-                    wait = delays[attempt]
-                logger.warning(
-                    f"GitHub API rate limited ({res.status_code}); backing off {wait}s"
-                )
-                await asyncio.sleep(min(wait, 30.0))
+                response = await self._client.request(method, url, **kwargs)
+            except httpx.HTTPError:
+                if attempt == attempts - 1:
+                    raise GitHubAPIError("GitHub transport unavailable") from None
+                await asyncio.sleep(2 ** attempt)
                 continue
-            return res
-        assert last_exc is not None  # pragma: no cover - defensive
-        raise last_exc
+            throttled = response.status_code == 429 or (response.status_code == 403 and
+                (response.headers.get("x-ratelimit-remaining") == "0" or "retry-after" in response.headers))
+            if (throttled or response.status_code >= 500) and attempt < attempts - 1:
+                try:
+                    delay = max(1, min(60, float(response.headers.get("retry-after", 2 ** attempt))))
+                except ValueError:
+                    delay = 2 ** attempt
+                await asyncio.sleep(delay)
+                continue
+            return response
 
-    async def get_current_user(self) -> Dict[str, Any]:
-        """Fetch the authenticated user profile."""
-        if self._has_gh:
-            data = await self._run_gh_api("/user")
-            if data and isinstance(data, dict):
-                return data
+    async def _json(self, method, endpoint, **kwargs):
+        response = await self._request(method, endpoint, **kwargs)
+        if not 200 <= response.status_code < 300:
+            raise GitHubAPIError(f"GitHub {method} failed with HTTP {response.status_code}")
+        return response.json() if response.content else {}
 
-        res = await self._request("GET", "/user")
-        if res.status_code == 200:
-            return res.json()
-        return {"login": self.config.github_username or "user"}
+    async def _pages(self, endpoint, params=None):
+        items = []
+        for page in range(1, 21):
+            data = await self._json("GET", endpoint, params={**(params or {}), "per_page": 100, "page": page})
+            if not isinstance(data, list):
+                raise GitHubAPIError("Invalid GitHub collection response")
+            items.extend(data)
+            if len(data) < 100:
+                return items
+        raise GitHubAPIError("GitHub collection exceeds processing bound; narrow the scope")
 
-    async def get_rate_limit(self) -> Dict[str, Any]:
-        """Fetch current rate limit status."""
-        if self._has_gh:
-            data = await self._run_gh_api("/rate_limit")
-            if data and isinstance(data, dict):
-                return data.get("rate", {})
+    async def get_current_user(self):
+        return await self._json("GET", "/user")
 
-        res = await self._request("GET", "/rate_limit")
-        if res.status_code == 200:
-            return res.json().get("rate", {})
-        return {"remaining": 5000, "limit": 5000}
+    async def get_rate_limit(self):
+        data = await self._json("GET", "/rate_limit")
+        rate = data.get("resources", {}).get("core", data.get("rate", {}))
+        if type(rate.get("remaining")) is not int or type(rate.get("limit")) is not int:
+            raise GitHubAPIError("GitHub quota unavailable")
+        return {**rate, "resources": data.get("resources", {})}
 
-    async def get_notifications(
-        self, all_notifications: bool = False, participating: bool = False
-    ) -> List[Dict[str, Any]]:
-        """Fetch notifications for the authenticated user."""
-        if self._has_gh:
-            endpoint = f"/notifications?all={'true' if all_notifications else 'false'}&participating={'true' if participating else 'false'}&per_page=50"
-            data = await self._run_gh_api(endpoint)
-            if data and isinstance(data, list):
-                return data
+    async def get_notifications(self, all_notifications=False, participating=False):
+        return await self._pages("/notifications", {"all": str(all_notifications).lower(), "participating": str(participating).lower()})
 
-        params = {
-            "all": "true" if all_notifications else "false",
-            "participating": "true" if participating else "false",
-            "per_page": 50,
-        }
-        res = await self._request("GET", "/notifications", params=params)
-        if res.status_code != 200:
-            return []
-        return res.json()
-
-    async def mark_notification_read(self, thread_id: str) -> bool:
-        """Mark a notification thread as read."""
+    async def mark_notification_read(self, thread_id):
         if self.config.dry_run:
-            logger.info(f"[DRY-RUN] Mark notification {thread_id} as read.")
             return True
+        await self._json("PATCH", f"/notifications/threads/{thread_id}")
+        return True
 
-        if self._has_gh:
-            res = await self._run_gh_api(f"/notifications/threads/{thread_id}", method="PATCH")
-            # _run_gh_api returns None on failure; empty dict/str is still success.
-            return res is not None
-
-        res = await self._request("PATCH", f"/notifications/threads/{thread_id}")
-        return res.status_code in (200, 202, 205)
-
-    async def mark_notification_done(self, thread_id: str) -> bool:
-        """Mark a notification thread as done (archives from GitHub notifications inbox)."""
+    async def mark_notification_done(self, thread_id):
         if self.config.dry_run:
-            logger.info(f"[DRY-RUN] Mark notification {thread_id} as done.")
             return True
+        await self._json("DELETE", f"/notifications/threads/{thread_id}")
+        return True
 
-        if self._has_gh:
-            res = await self._run_gh_api(f"/notifications/threads/{thread_id}", method="DELETE")
-            return res is not None
+    async def get_resource_by_url(self, url):
+        return await self._json("GET", url)
 
-        res = await self._request("DELETE", f"/notifications/threads/{thread_id}")
-        return res.status_code in (200, 204, 205)
+    async def get_issue_comments(self, comments_url):
+        return await self._pages(comments_url)
 
-    async def get_resource_by_url(self, url: str) -> Optional[Dict[str, Any]]:
-        """Fetch resource by API URL or endpoint."""
-        endpoint = url.replace("https://api.github.com", "") if url.startswith("https://api.github.com") else url
-        if self._has_gh:
-            data = await self._run_gh_api(endpoint)
-            if data and isinstance(data, dict):
-                return data
-
-        res = await self._request("GET", url)
-        if res.status_code == 200:
-            return res.json()
-        return None
-
-    async def get_issue_comments(self, comments_url: str) -> List[Dict[str, Any]]:
-        """Fetch comments for an issue or PR."""
-        endpoint = comments_url.replace("https://api.github.com", "") if comments_url.startswith("https://api.github.com") else comments_url
-        if self._has_gh:
-            data = await self._run_gh_api(endpoint)
-            if data and isinstance(data, list):
-                return data
-
-        res = await self._request("GET", comments_url)
-        if res.status_code == 200:
-            return res.json()
-        return []
-
-    async def post_issue_comment(
-        self, owner: str, repo: str, issue_number: int, body: str
-    ) -> Optional[Dict[str, Any]]:
-        """Post a comment to an issue or pull request."""
+    async def post_issue_comment(self, owner, repo, issue_number, body):
         if self.config.dry_run:
-            logger.info(
-                f"[DRY-RUN] Would post comment to {owner}/{repo}#{issue_number}:\n{body}"
-            )
-            return {"id": 999999, "body": body, "dry_run": True}
+            return {"id": "simulation", "body": body, "dry_run": True}
+        return await self._json("POST", f"/repos/{owner}/{repo}/issues/{issue_number}/comments", json={"body": body})
 
-        endpoint = f"/repos/{owner}/{repo}/issues/{issue_number}/comments"
-        if self._has_gh:
-            data = await self._run_gh_api(endpoint, method="POST", body={"body": body})
-            if data and isinstance(data, dict):
-                return data
+    async def _graphql(self, query, variables):
+        data = await self._json("POST", "/graphql", json={"query": query, "variables": variables})
+        if data.get("errors") or not isinstance(data.get("data"), dict):
+            raise GitHubAPIError("GitHub GraphQL operation failed")
+        return data["data"]
 
-        res = await self._request("POST", endpoint, json={"body": body})
-        if res.status_code == 201:
-            return res.json()
-        return None
+    async def get_discussion(self, owner, repo, discussion_number):
+        query = "query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){discussion(number:$number){id title body url}}}"
+        data = await self._graphql(query, {"owner": owner, "repo": repo, "number": discussion_number})
+        discussion = data.get("repository", {}).get("discussion")
+        if not discussion:
+            raise GitHubAPIError("Discussion unavailable")
+        return {**discussion, "node_id": discussion["id"]}
 
-    async def get_discussion(self, owner: str, repo: str, discussion_number: int) -> Optional[Dict[str, Any]]:
-        """Fetch details for a specific repository discussion."""
-        endpoint = f"/repos/{owner}/{repo}/discussions/{discussion_number}"
-        if self._has_gh:
-            data = await self._run_gh_api(endpoint)
-            if data and isinstance(data, dict):
-                return data
+    async def get_discussion_comments(self, owner, repo, discussion_number):
+        query = "query($owner:String!,$repo:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repo){discussion(number:$number){comments(first:100,after:$cursor){nodes{body author{login}} pageInfo{hasNextPage endCursor}}}}}"
+        cursor, comments = None, []
+        for _ in range(20):
+            data = await self._graphql(query, {"owner": owner, "repo": repo, "number": discussion_number, "cursor": cursor})
+            conn = data["repository"]["discussion"]["comments"]
+            comments.extend({"body": c["body"], "user": {"login": (c.get("author") or {}).get("login", "")}} for c in conn["nodes"])
+            if not conn["pageInfo"]["hasNextPage"]:
+                return comments
+            cursor = conn["pageInfo"]["endCursor"]
+        raise GitHubAPIError("Discussion exceeds processing bound")
 
-        res = await self._request("GET", endpoint)
-        if res.status_code == 200:
-            return res.json()
-        return None
-
-    async def get_discussion_comments(
-        self, owner: str, repo: str, discussion_number: int
-    ) -> List[Dict[str, Any]]:
-        """Fetch comments for a repository discussion."""
-        endpoint = f"/repos/{owner}/{repo}/discussions/{discussion_number}/comments"
-        if self._has_gh:
-            data = await self._run_gh_api(endpoint)
-            if data and isinstance(data, list):
-                return data
-
-        res = await self._request("GET", endpoint)
-        if res.status_code == 200:
-            return res.json()
-        return []
-
-    async def post_discussion_comment(
-        self,
-        owner: str,
-        repo: str,
-        discussion_number: int,
-        body: str,
-        discussion_node_id: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """Post a reply comment to a GitHub discussion."""
+    async def post_discussion_comment(self, owner, repo, discussion_number, body, discussion_node_id=None):
         if self.config.dry_run:
-            logger.info(
-                f"[DRY-RUN] Would post discussion comment to {owner}/{repo}/discussions/{discussion_number}:\n{body}"
-            )
-            return {"id": 999998, "body": body, "dry_run": True}
+            return {"id": "simulation", "body": body, "dry_run": True}
+        if not discussion_node_id:
+            discussion_node_id = (await self.get_discussion(owner, repo, discussion_number))["node_id"]
+        query = "mutation($id:ID!,$body:String!){addDiscussionComment(input:{discussionId:$id,body:$body}){comment{id url}}}"
+        return (await self._graphql(query, {"id": discussion_node_id, "body": body}))["addDiscussionComment"]["comment"]
 
-        endpoint = f"/repos/{owner}/{repo}/discussions/{discussion_number}/comments"
-        if self._has_gh:
-            data = await self._run_gh_api(endpoint, method="POST", body={"body": body})
-            if data and isinstance(data, dict):
-                return data
+    async def search_issues(self, query, sort="updated", order="desc", per_page=30):
+        data = await self._json("GET", "/search/issues", params={"q": query, "sort": sort, "order": order, "per_page": min(per_page, 100)})
+        return data.get("items", [])
 
-            if discussion_node_id:
-                mutation = "mutation($discussionId: ID!, $body: String!) { addDiscussionComment(input: {discussionId: $discussionId, body: $body}) { comment { id url } } }"
-                gql_cmd = [
-                    "gh", "api", "graphql",
-                    "-F", f"discussionId={discussion_node_id}",
-                    "-F", f"body={body}",
-                    "-f", f"query={mutation}",
-                ]
-                res = await self._run_command(gql_cmd, timeout=20.0)
-                if res and res[0] == 0 and res[1]:
-                    try:
-                        parsed = json.loads(res[1])
-                        comment_data = parsed.get("data", {}).get("addDiscussionComment", {}).get("comment", {})
-                        if comment_data:
-                            return comment_data
-                    except Exception:
-                        pass
+    async def get_repository(self, owner, repo):
+        return await self._json("GET", f"/repos/{owner}/{repo}")
 
-        res = await self._request("POST", endpoint, json={"body": body})
-        if res.status_code in (200, 201):
-            return res.json()
-        return None
+    async def get_issue(self, owner, repo, number):
+        return await self._json("GET", f"/repos/{owner}/{repo}/issues/{number}")
 
-    async def search_issues(
-        self, query: str, sort: str = "updated", order: str = "desc", per_page: int = 30
-    ) -> List[Dict[str, Any]]:
-        """Search issues across GitHub repositories."""
-        if self._has_gh:
-            endpoint = f"/search/issues?{urlencode({'q': query, 'sort': sort, 'order': order, 'per_page': min(per_page, 50)})}"
-            data = await self._run_gh_api(endpoint)
-            if data and isinstance(data, dict):
-                return data.get("items", [])
+    async def has_linked_pr(self, owner, repo, number):
+        query = "query($owner:String!,$repo:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repo){issue(number:$number){timelineItems(first:100,after:$cursor,itemTypes:[CROSS_REFERENCED_EVENT]){nodes{... on CrossReferencedEvent{source{... on PullRequest{state}}}} pageInfo{hasNextPage endCursor}}}}}"
+        cursor = None
+        for _ in range(20):
+            data = await self._graphql(query, {"owner": owner, "repo": repo, "number": number, "cursor": cursor})
+            conn = data["repository"]["issue"]["timelineItems"]
+            if any((node.get("source") or {}).get("state") == "OPEN" for node in conn["nodes"]):
+                return True
+            if not conn["pageInfo"]["hasNextPage"]:
+                return False
+            cursor = conn["pageInfo"]["endCursor"]
+        # Never assume no conflicts after incomplete traversal.
+        return True
 
-        res = await self._request("GET", "/search/issues", params={"q": query, "sort": sort, "order": order, "per_page": per_page})
-        if res.status_code == 200:
-            return res.json().get("items", [])
-        return []
+    async def check_issue_eligibility(self, owner, repo, number):
+        issue = await self.get_issue(owner, repo, number)
+        if issue.get("state") != "open" or issue.get("locked") or issue.get("assignees") or issue.get("pull_request"):
+            return False, "Issue closed, assigned, locked, or a pull request"
+        metadata = await self.get_repository(owner, repo)
+        if metadata.get("archived") or metadata.get("disabled") or metadata.get("stargazers_count", 0) < self.config.min_repo_stars:
+            return False, "Repository is ineligible"
+        if await self.has_linked_pr(owner, repo, number):
+            return False, "Issue already has an open linked pull request"
+        return True, "Eligible"
 
-    async def create_pull_request(
-        self,
-        owner: str,
-        repo: str,
-        title: str,
-        body: str,
-        head: str,
-        base: str = "main",
-        draft: bool = False,
-    ) -> Optional[Dict[str, Any]]:
-        """Create a new Pull Request."""
-        payload = {
-            "title": title,
-            "body": body,
-            "head": head,
-            "base": base,
-            "draft": draft,
-        }
+    async def ensure_fork(self, owner, repo):
+        user = (await self.get_current_user())["login"]
+        if user.lower() == owner.lower():
+            return await self.get_repository(owner, repo)
+        response = await self._request("GET", f"/repos/{user}/{repo}")
+        if response.status_code == 200:
+            fork = response.json()
+            if not fork.get("fork") or fork.get("parent", {}).get("full_name", "").lower() != f"{owner}/{repo}".lower():
+                raise GitHubAPIError("Existing repository is not a fork of the selected upstream")
+            return fork
+        if response.status_code != 404:
+            raise GitHubAPIError("Cannot verify fork")
+        await self._json("POST", f"/repos/{owner}/{repo}/forks", json={"default_branch_only": True})
+        for _ in range(10):
+            await asyncio.sleep(2)
+            response = await self._request("GET", f"/repos/{user}/{repo}")
+            if response.status_code == 200:
+                return response.json()
+        raise GitHubAPIError("Fork creation is still pending; retry later")
+
+    async def create_pull_request(self, owner, repo, title, body, head, base="main", draft=True):
+        payload = {"title": title, "body": body, "head": head, "base": base, "draft": draft}
         if self.config.dry_run:
-            logger.info(
-                f"[DRY-RUN] Would create PR on {owner}/{repo} from {head} -> {base}:\n"
-                f"Title: {title}\nBody:\n{body}"
-            )
-            return {
-                "id": 888888,
-                "html_url": f"https://github.com/{owner}/{repo}/pull/mock-dry-run",
-                "number": 12345,
-                "title": title,
-                "body": body,
-                "dry_run": True,
-            }
-
-        endpoint = f"/repos/{owner}/{repo}/pulls"
-        if self._has_gh:
-            data = await self._run_gh_api(endpoint, method="POST", body=payload)
-            if data and isinstance(data, dict):
-                return data
-
-        res = await self._request("POST", endpoint, json=payload)
-        if res.status_code == 201:
-            return res.json()
-        return None
+            return {**payload, "html_url": f"https://github.com/{owner}/{repo}/pull/mock-dry-run", "dry_run": True}
+        return await self._json("POST", f"/repos/{owner}/{repo}/pulls", json=payload)

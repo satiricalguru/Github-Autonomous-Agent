@@ -5,8 +5,14 @@ import asyncio
 import logging
 import signal
 from typing import Optional
+import json
+import tempfile
+from pathlib import Path
+from .runtime import send_control, RunLease
 from rich.console import Console
 from rich.table import Table
+from .ai_engine import AIEngine, extract_json_payload
+from .sandbox import RepositorySandbox, detect_test_command, tests_executed
 
 try:
     from .config import AgentConfig, config
@@ -48,6 +54,37 @@ async def cmd_status():
     console.print(status_tracker.render_dashboard())
 
 
+async def cmd_doctor():
+    """Verify credentials, real inference, and a disposable isolated test suite."""
+    config.load_settings()
+    results = {}
+    async with GitHubClient(config) as client:
+        try:
+            user = await client.get_current_user()
+            rate = await client.get_rate_limit()
+            safe, reason = SafetyGuardrails(config).check_rate_limit(rate["remaining"])
+            results["github"] = {"passed": safe, "account": user["login"], "remaining": rate["remaining"], "detail": reason}
+        except RuntimeError as error:
+            results["github"] = {"passed": False, "detail": str(error)}
+    ai = AIEngine(config)
+    response = await ai._call_model('Return exactly {"integration":"ok"} as JSON.')
+    results["model"] = {"passed": extract_json_payload(response or "") == {"integration": "ok"}, **ai.get_health()}
+    with tempfile.TemporaryDirectory(prefix="github-agent-doctor-") as directory:
+        root = Path(directory)
+        (root / ".git").mkdir()
+        (root / "test_runtime.py").write_text("def test_runtime():\n    assert 2 + 2 == 4\n")
+        command = detect_test_command(root)
+        try:
+            result = await RepositorySandbox(config).run(command, root)
+            output = result.stdout + result.stderr
+            results["test_runtime"] = {"passed": result.returncode == 0 and tests_executed(command, output), "detail": output[-1000:]}
+        except Exception as error:
+            results["test_runtime"] = {"passed": False, "detail": str(error)}
+    console.print_json(json.dumps(results))
+    if not all(item["passed"] for item in results.values()):
+        raise RuntimeError("Readiness check failed; resolve the reported configuration or runtime issue")
+
+
 def cmd_tasks():
     """Print detailed table of completed and in-progress tasks."""
     console.print(task_tracker.render_tasks_table())
@@ -56,6 +93,7 @@ def cmd_tasks():
 def cmd_web(port: int = 3000):
     """Launch the live web dashboard interface."""
     import time
+    config.load_settings()
     try:
         server = start_web_server(port=port)
     except OSError as e:
@@ -83,38 +121,39 @@ async def cmd_inbox(dry_run: Optional[bool] = None, mark_done: bool = False):
     if dry_run is not None:
         config.dry_run = dry_run
 
-    async with GitHubClient(config) as client:
-        inbox = InboxManager(client=client, agent_config=config)
-        if mark_done:
-            console.print(f"[bold cyan]Marking all completed/handled notifications as Done in GitHub Inbox (Mode: {'DRY-RUN' if config.dry_run else 'LIVE'})...[/bold cyan]")
-            count = await inbox.mark_all_completed_done()
-            console.print(f"[bold green]✓ Successfully marked {count} notification(s) as Done in GitHub Inbox.[/bold green]")
-            return
+    with RunLease(config.scratch_dir):
+        async with GitHubClient(config) as client:
+            inbox = InboxManager(client=client, agent_config=config)
+            if mark_done:
+                console.print(f"[bold cyan]Marking all completed/handled notifications as Done in GitHub Inbox (Mode: {'DRY-RUN' if config.dry_run else 'LIVE'})...[/bold cyan]")
+                count = await inbox.mark_all_completed_done()
+                console.print(f"[bold green]✓ Successfully marked {count} notification(s) as Done in GitHub Inbox.[/bold green]")
+                return
 
-        console.print(f"[bold cyan]Running Inbox Triage (Mode: {'DRY-RUN' if config.dry_run else 'LIVE'})...[/bold cyan]")
-        results = await inbox.process_inbox()
+            console.print(f"[bold cyan]Running Inbox Triage (Mode: {'DRY-RUN' if config.dry_run else 'LIVE'})...[/bold cyan]")
+            results = await inbox.process_inbox()
 
-        if not results:
-            console.print("[green]No unread notifications to process.[/green]")
-            return
+            if not results:
+                console.print("[green]No unread notifications to process.[/green]")
+                return
 
-        table = Table(title="Inbox Triage Results", border_style="green")
-        table.add_column("Thread ID", style="dim")
-        table.add_column("Repository", style="bold")
-        table.add_column("Subject", style="white")
-        table.add_column("Reason", style="cyan")
-        table.add_column("Action", style="green")
+            table = Table(title="Inbox Triage Results", border_style="green")
+            table.add_column("Thread ID", style="dim")
+            table.add_column("Repository", style="bold")
+            table.add_column("Subject", style="white")
+            table.add_column("Reason", style="cyan")
+            table.add_column("Action", style="green")
 
-        for r in results:
-            table.add_row(
-                str(r.get("thread_id", "--")),
-                str(r.get("repo", "?")),
-                str(r.get("title", ""))[:50],
-                str(r.get("reason", "")),
-                str(r.get("action", "")),
-            )
+            for r in results:
+                table.add_row(
+                    str(r.get("thread_id", "--")),
+                    str(r.get("repo", "?")),
+                    str(r.get("title", ""))[:50],
+                    str(r.get("reason", "")),
+                    str(r.get("action", "")),
+                )
 
-        console.print(table)
+            console.print(table)
 
 
 async def cmd_hunt(limit: int = 5):
@@ -158,30 +197,33 @@ async def cmd_solve(auto: bool = True, limit: int = 1, dry_run: Optional[bool] =
     """Find actionable top-tier issues and attempt verified solution."""
     if dry_run is not None:
         config.dry_run = dry_run
+    if not auto:
+        await cmd_hunt(limit=limit)
+        return
     limit = max(1, min(int(limit or 1), 10))
     console.print(f"[bold cyan]Hunting and solving top-tier issues (auto={auto}, limit={limit}, mode={'DRY-RUN' if config.dry_run else 'LIVE'})...[/bold cyan]")
-    async with GitHubClient(config) as client:
-        hunter = IssueHunter(client=client, agent_config=config)
-        solver = PRSolver(client=client, agent_config=config)
-        candidates = await hunter.hunt_issues(limit=limit)
-        if not candidates:
-            console.print("[yellow]No actionable issues discovered matching search criteria.[/yellow]")
-            return
-        for c in candidates:
-            console.print(f"[cyan]Attempting fix for {c.get('repo', '?')}#{c.get('issue_number', '?')}: {c.get('title', '')[:80]}[/cyan]")
-            res = await solver.solve_issue(c)
-            if res:
-                console.print(f"[bold green]✓ PR Processed:[/bold green] {res.get('pr_url', '?')} (Dry Run: {res.get('dry_run', False)})")
-            else:
-                console.print(f"[yellow]Could not complete fix for {c.get('repo', '?')}#{c.get('issue_number', '?')}[/yellow]")
+    with RunLease(config.scratch_dir):
+        async with GitHubClient(config) as client:
+            hunter = IssueHunter(client=client, agent_config=config)
+            solver = PRSolver(client=client, agent_config=config)
+            solver.safety.state.clear_orphaned_claims()
+            candidates = await hunter.hunt_issues(limit=limit)
+            if not candidates:
+                console.print("[yellow]No actionable issues discovered matching search criteria.[/yellow]")
+                return
+            for c in candidates:
+                console.print(f"[cyan]Attempting fix for {c.get('repo', '?')}#{c.get('issue_number', '?')}: {c.get('title', '')[:80]}[/cyan]")
+                res = await solver.solve_issue(c)
+                if res:
+                    console.print(f"[bold green]✓ PR Processed:[/bold green] {res.get('pr_url', '?')} (Dry Run: {res.get('dry_run', False)})")
+                else:
+                    console.print(f"[yellow]Could not complete fix for {c.get('repo', '?')}#{c.get('issue_number', '?')}[/yellow]")
 
 
 def cmd_stop():
     """Stop background agent execution."""
-    status_tracker.overall_status = "STOPPED"
-    status_tracker.log_event("SYSTEM", "Agent stopped via CLI command")
-    status_tracker.save()
-    console.print("[bold yellow]✓ Signaled Autonomous GitHub Agent to stop.[/bold yellow]")
+    result = send_control(config.scratch_dir, "stop")
+    console.print(f"[yellow]Agent acknowledged stop: {result['overall_status']}[/yellow]")
 
 
 async def cmd_start(dry_run: Optional[bool] = None, web_port: int = 3000):
@@ -189,6 +231,9 @@ async def cmd_start(dry_run: Optional[bool] = None, web_port: int = 3000):
     if dry_run is not None:
         config.dry_run = dry_run
 
+    config.load_settings()
+    if dry_run is not None:
+        config.dry_run = dry_run
     orchestrator = AutonomousOrchestrator(config, web_port=web_port)
 
     # Register OS signal handlers
@@ -211,7 +256,7 @@ def _resolve_dry_run(args) -> Optional[bool]:
     return None
 
 
-def main():
+def _main():
     parser = argparse.ArgumentParser(description="Autonomous GitHub Agent for Google Antigravity")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug logging")
 
@@ -219,12 +264,14 @@ def main():
 
     # Start command
     start_parser = subparsers.add_parser("start", help="Start continuous autonomous agent loop")
-    start_parser.add_argument("--dry-run", action="store_true", help="Run in dry-run mode (no live writes)")
-    start_parser.add_argument("--live", action="store_true", help="Run in live mode (submits PRs and replies)")
+    start_parser_mode = start_parser.add_mutually_exclusive_group()
+    start_parser_mode.add_argument("--dry-run", action="store_true", help="Run in dry-run mode (no live writes)")
+    start_parser_mode.add_argument("--live", action="store_true", help="Run in live mode (submits PRs and replies)")
     start_parser.add_argument("--port", type=int, default=3000, help="Port for live web dashboard (default: 3000)")
 
     # Status command
     subparsers.add_parser("status", help="Check agent status, credentials, and rate limits")
+    subparsers.add_parser("doctor", help="Check GitHub authentication, real model inference, and isolated tests")
 
     # Tasks command
     subparsers.add_parser("tasks", help="List all completed and in-progress agent tasks")
@@ -235,8 +282,9 @@ def main():
 
     # Inbox command
     inbox_parser = subparsers.add_parser("inbox", help="Run a single pass of inbox triage")
-    inbox_parser.add_argument("--dry-run", action="store_true", help="Simulate replies only")
-    inbox_parser.add_argument("--live", action="store_true", help="Submit real replies")
+    inbox_parser_mode = inbox_parser.add_mutually_exclusive_group()
+    inbox_parser_mode.add_argument("--dry-run", action="store_true", help="Simulate replies only")
+    inbox_parser_mode.add_argument("--live", action="store_true", help="Submit real replies")
     inbox_parser.add_argument("--mark-done", action="store_true", help="Mark all completed/handled items as done in GitHub inbox")
 
     # Hunt command
@@ -247,8 +295,9 @@ def main():
     solve_parser = subparsers.add_parser("solve", help="Hunt and autonomously solve issues")
     solve_parser.add_argument("--auto", dest="auto", action=argparse.BooleanOptionalAction, default=True, help="Autonomously solve issues without prompting (--no-auto to disable)")
     solve_parser.add_argument("--limit", type=int, default=1, help="Number of issues to solve")
-    solve_parser.add_argument("--dry-run", action="store_true", help="Simulate PR creation only")
-    solve_parser.add_argument("--live", action="store_true", help="Submit real PRs")
+    solve_parser_mode = solve_parser.add_mutually_exclusive_group()
+    solve_parser_mode.add_argument("--dry-run", action="store_true", help="Simulate PR creation only")
+    solve_parser_mode.add_argument("--live", action="store_true", help="Submit real PRs")
 
     # Stop command
     subparsers.add_parser("stop", help="Signal autonomous agent to stop")
@@ -258,6 +307,8 @@ def main():
 
     if args.command == "status":
         asyncio.run(cmd_status())
+    elif args.command == "doctor":
+        asyncio.run(cmd_doctor())
     elif args.command == "tasks":
         cmd_tasks()
     elif args.command == "web":
@@ -274,6 +325,14 @@ def main():
         asyncio.run(cmd_start(dry_run=_resolve_dry_run(args), web_port=getattr(args, "port", 3000)))
     else:
         parser.print_help()
+
+
+def main():
+    try:
+        _main()
+    except (RuntimeError, ValueError) as error:
+        console.print(f"[red]{error}[/red]")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

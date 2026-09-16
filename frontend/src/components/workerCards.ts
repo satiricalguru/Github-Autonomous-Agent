@@ -1,3 +1,4 @@
+import { escapeHtml } from '../dom.js';
 /**
  * Worker Cards Component
  */
@@ -8,6 +9,7 @@ import { sound } from '../audio.js';
 import { WorkerState } from '../types.js';
 
 export class WorkerCards {
+  private lastPayload = "";
   private containerEl: HTMLElement | null = null;
 
   constructor() {
@@ -26,6 +28,9 @@ export class WorkerCards {
 
   private render(workers: Record<string, WorkerState>): void {
     if (!this.containerEl) return;
+    const payload = JSON.stringify(workers);
+    if (payload === this.lastPayload) return;
+    this.lastPayload = payload;
 
     const workerList = Object.entries(workers);
     if (workerList.length === 0) {
@@ -39,15 +44,15 @@ export class WorkerCards {
 
     this.containerEl.innerHTML = workerList.map(([key, worker]) => {
       const isRunning = worker.status === 'running';
-      const badgeClass = isRunning ? 'badge-active' : 'badge-idle';
+      const badgeClass = worker.status === 'error' ? 'badge-error' : isRunning ? 'badge-active' : 'badge-idle';
 
       let triggerAction = '';
       if (key.includes('inbox')) {
-        triggerAction = `<button class="btn btn-sm trigger-worker-btn" data-worker="inbox">Trigger Inbox Scan</button>`;
+        triggerAction = `<button class="btn btn-sm trigger-worker-btn" ${worker.status === 'stopped' ? 'disabled' : ''} data-worker="inbox">Trigger Inbox Scan</button>`;
       } else if (key.includes('hunt') || key.includes('issue')) {
-        triggerAction = `<button class="btn btn-sm trigger-worker-btn" data-worker="hunt">Trigger Issue Hunter</button>`;
+        triggerAction = `<button class="btn btn-sm trigger-worker-btn" ${worker.status === 'stopped' ? 'disabled' : ''} data-worker="hunt">Trigger Issue Hunter</button>`;
       } else if (key.includes('solve')) {
-        triggerAction = `<button class="btn btn-sm trigger-worker-btn" data-worker="solve">Trigger Solver</button>`;
+        triggerAction = `<button class="btn btn-sm trigger-worker-btn" ${worker.status === 'stopped' ? 'disabled' : ''} data-worker="solve">Trigger Solver</button>`;
       }
 
       return `
@@ -62,27 +67,27 @@ export class WorkerCards {
                 </svg>
               </div>
               <div>
-                <div class="worker-name">${worker.name || key}</div>
-                <div class="worker-role">${worker.role || 'Background Autonomous Task'}</div>
+                <div class="worker-name">${escapeHtml(worker.name || key)}</div>
+                <div class="worker-role">${escapeHtml(worker.role || 'Background Autonomous Task')}</div>
               </div>
             </div>
             <span class="badge ${badgeClass}">
               <span class="status-dot ${isRunning ? 'pulse' : ''}"></span>
-              ${worker.status}
+              ${escapeHtml(worker.status)}
             </span>
           </div>
 
           <div class="worker-status-banner">
             <div class="worker-status-text">
               <span style="color:var(--text-dim);">Task:</span>
-              <span>${worker.current_task || 'Idle / Listening for events'}</span>
+              <span>${escapeHtml(worker.current_task || 'Idle / Listening for events')}</span>
             </div>
             ${isRunning ? '<div class="radar-spinner"></div>' : ''}
           </div>
 
           <div style="display:flex; justify-content:space-between; font-size:0.75rem; color:var(--text-dim);">
-            <div>Last Run: <span style="color:var(--text-main);">${worker.last_run || 'Recently'}</span></div>
-            <div>Iterations: <span style="color:var(--text-main); font-weight:700;">${worker.iteration || 1}</span></div>
+            <div>Last Run: <span style="color:var(--text-main);">${escapeHtml(worker.last_run || 'Never')}</span></div>
+            <div>Iterations: <span style="color:var(--text-main); font-weight:700;">${escapeHtml(worker.iteration ?? 0)}</span></div>
           </div>
 
           <div style="display:flex; justify-content:flex-end; gap:0.5rem; margin-top:0.25rem;">
@@ -99,6 +104,7 @@ export class WorkerCards {
         const button = e.currentTarget as HTMLButtonElement;
         sound.playClick();
         button.disabled = true;
+        button.dataset.busy = 'true';
         const originalText = button.textContent;
         button.textContent = 'Triggering...';
         try {
@@ -107,6 +113,7 @@ export class WorkerCards {
           button.textContent = '✓ Triggered';
           setTimeout(() => {
             button.textContent = originalText;
+            delete button.dataset.busy;
             button.disabled = false;
           }, 2000);
         } catch {
@@ -114,6 +121,7 @@ export class WorkerCards {
           button.textContent = 'Error';
           setTimeout(() => {
             button.textContent = originalText;
+            delete button.dataset.busy;
             button.disabled = false;
           }, 2000);
         }

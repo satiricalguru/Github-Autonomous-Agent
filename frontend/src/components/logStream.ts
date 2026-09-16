@@ -9,6 +9,7 @@ export class LogStream {
   private bodyEl: HTMLElement | null = null;
   private autoscrollCheckbox: HTMLInputElement | null = null;
   private clearBtn: HTMLElement | null = null;
+  private clearedLogs = new Set<string>();
   private localLogs: string[] = [];
 
   constructor() {
@@ -29,6 +30,7 @@ export class LogStream {
     if (this.clearBtn) {
       this.clearBtn.addEventListener('click', () => {
         sound.playClick();
+        this.localLogs.forEach(line => this.clearedLogs.add(line));
         this.localLogs = [];
         if (this.bodyEl) {
           this.bodyEl.innerHTML = `<div class="log-empty">Logs cleared. Waiting for new stream events...</div>`;
@@ -46,6 +48,7 @@ export class LogStream {
   private updateLogs(incomingLogs: string[], autoscroll: boolean): void {
     if (!this.bodyEl) return;
 
+    incomingLogs = incomingLogs.filter(line => !this.clearedLogs.has(line));
     // Check if logs changed
     if (JSON.stringify(this.localLogs) === JSON.stringify(incomingLogs)) {
       return;

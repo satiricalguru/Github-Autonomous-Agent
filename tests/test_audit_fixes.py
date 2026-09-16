@@ -82,25 +82,22 @@ class TestAuditFixes(unittest.IsolatedAsyncioTestCase):
     async def test_solver_aborts_on_failing_tests(self):
         mock_client = MagicMock()
         mock_client.create_pull_request = AsyncMock(return_value={"html_url": "http://pr"})
+        mock_client.check_issue_eligibility = AsyncMock(return_value=(True, "ok"))
+        mock_client.get_repository = AsyncMock(return_value={"default_branch": "main"})
         solver = PRSolver(
             client=mock_client, safety=self.safety, agent_config=self.cfg,
             status=self.status, tasks=self.tasks,
         )
         solver._run_repo_tests = AsyncMock(return_value=(False, "FAILED"))
-        # Point repos_dir at temp and pre-create repo dir to skip clone
-        repo_dir = self.cfg.repos_dir / "owner_repo"
-        repo_dir.mkdir(parents=True, exist_ok=True)
-        import subprocess
-
-        subprocess.run(["git", "init", "-q"], cwd=str(repo_dir), capture_output=True)
-        subprocess.run(["git", "config", "user.name", "t"], cwd=str(repo_dir), capture_output=True)
-        subprocess.run(["git", "config", "user.email", "t@t"], cwd=str(repo_dir), capture_output=True)
+        solver._git = AsyncMock(return_value="")
         candidate = {
             "repo": "owner/repo", "issue_number": 1, "title": "bug",
             "body": "body", "url": "https://github.com/owner/repo/issues/1",
         }
         res = await solver.solve_issue(candidate)
         self.assertIsNone(res)
+        solver._run_repo_tests.assert_awaited_once()
+        self.assertIn("Baseline tests failed", self.tasks.get_api_tasks()[0]["error"])
         mock_client.create_pull_request.assert_not_called()
 
     def test_task_tracker_includes_failed(self):

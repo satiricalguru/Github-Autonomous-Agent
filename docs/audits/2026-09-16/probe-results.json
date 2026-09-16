@@ -1,0 +1,196 @@
+{
+  "telemetry": {
+    "task": {
+      "id": "TASK-1789578806-A138",
+      "category": "SOLVER",
+      "title": "Fixture task",
+      "target_repo": "fixture/repo",
+      "target_url": "",
+      "status": "COMPLETED",
+      "started_at": "2026-09-16 17:13:26 UTC",
+      "completed_at": "2026-09-16 17:13:26 UTC",
+      "outcome": "Successfully completed",
+      "details": {
+        "pr_url": "https://github.com/fixture/repo/pull/1"
+      }
+    },
+    "metrics": {
+      "uptime_seconds": 0,
+      "tasks_completed": 0,
+      "prs_opened": 0,
+      "inbox_processed": 0,
+      "active_workers": 3,
+      "rate_limit_remaining": 5000,
+      "rate_limit_limit": 5000
+    },
+    "recent_logs": [
+      " [INFO] SYSTEM: "
+    ],
+    "fresh_tracker_inbox_state": "IDLE"
+  },
+  "control": {
+    "pause_response": {
+      "status": "ok",
+      "overall_status": "PAUSED"
+    },
+    "calls_after_pause": 2,
+    "calls_after_cli_stop": 2,
+    "total_iterations": 5
+  },
+  "manual_triggers": {
+    "inbox": {
+      "status": "triggered",
+      "message": "Inbox scan initiated"
+    },
+    "hunt": {
+      "status": "triggered",
+      "message": "Issue hunt scan initiated"
+    },
+    "solve": {
+      "status": "triggered",
+      "message": "Solver process initiated"
+    }
+  },
+  "settings_partial_write": {
+    "http_status": 200,
+    "body": {
+      "status": "error",
+      "error": "Invalid inbox_poll_interval"
+    },
+    "model_after_error": "claude-sonnet-4.6"
+  },
+  "settings_string_boolean": {
+    "body": {
+      "status": "ok",
+      "message": "Settings applied successfully"
+    },
+    "actual_dry_run": true
+  },
+  "settings_list_body": {
+    "status": "error",
+    "error": "'list' object has no attribute 'get'"
+  },
+  "cross_origin_write": {
+    "http_status": 200,
+    "body": {
+      "status": "ok",
+      "message": "Settings applied successfully"
+    },
+    "dry_run": false
+  },
+  "model_sync_overwrite": "gemini-3.8-flash",
+  "solver_unverified_patch": {
+    "pr_returned": true,
+    "pr_calls": 1,
+    "test_runs_in_pipeline": 1,
+    "tests_after_patch_pass": false,
+    "can_fix_false_ignored": true
+  },
+  "solver_no_tests": [
+    true,
+    "No standard test runner configuration detected."
+  ],
+  "solver_path_escape": {
+    "wrote_outside_repo_via_symlink": true
+  },
+  "scratch_state": {
+    "recorded_prs": 2,
+    "handled_issues": 1
+  },
+  "provider_routing": {
+    "request_urls": [
+      "https://generativelanguage.googleapis.com/v1beta/models/claude-sonnet-4.6:generateContent"
+    ],
+    "fallback": {
+      "should_respond": true,
+      "confidence": 0.7,
+      "rationale": "Heuristic based on notification reason: mention",
+      "suggested_reply": "Thanks for tagging me on [fixture/repo] fixture. I am looking into this and will follow up shortly."
+    }
+  },
+  "offline_patch": {
+    "can_fix": true,
+    "confidence": 0.7,
+    "target_file": "module.py",
+    "search_content": "",
+    "replacement_content": "",
+    "file_content": "",
+    "explanation": "Address bug module.py",
+    "patch_description": "Automated fix for bug module.py"
+  },
+  "github_failed_rate_limit": {
+    "remaining": 5000,
+    "limit": 5000
+  },
+  "subprocess_timeout": {
+    "child_alive_after_timeout": true
+  },
+  "inbox_failed_reply": {
+    "attempted_archive": 1,
+    "persisted_as_handled": true,
+    "task_status": "COMPLETED"
+  },
+  "hunter": {
+    "accepted_pr_as_issue": true,
+    "duplicate_candidate_urls": true,
+    "query": "state:open no:assignee language:python stars:>=1000 label:\"good first issue\""
+  },
+  "lifecycle": {
+    "inbox_iterations": 8,
+    "hunter_iterations": 8,
+    "recovered_from_transient_failure": true,
+    "direct_stop_seconds": 0.0011,
+    "final_status": "STOPPED"
+  },
+  "multiple_state_writers": {
+    "pr_records_after_second_writer": 0
+  },
+  "browser_navigation": {
+    "overview": true,
+    "tasks": true,
+    "workers": true,
+    "terminal": true,
+    "settings": true
+  },
+  "browser_settings": {
+    "selected_model": "CLAUDE-OPUS-4.6",
+    "inbox_input": "60",
+    "actual_inbox_interval": 77,
+    "hunt_input": "300",
+    "actual_hunt_interval": 333
+  },
+  "browser_error_toast": "\u2713\nSettings saved successfully",
+  "browser_tasks": {
+    "all_rows": "TASK-1789578807-96BA\tundefined\t-\t\nCOMPLETED\tRecently\nTASK-1789578806-13AA\tundefined\t-\t\nCOMPLETED\tRecently\nTASK-1789578806-A1EC\tundefined\t-\t\nCOMPLETED\tRecently\nTASK-1789578806-A138\tundefined\t-\t\nCOMPLETED\tRecently",
+    "completed_filter": "No tasks found matching current filter or search criteria.",
+    "repo_search": "No tasks found matching current filter or search criteria."
+  },
+  "browser_drawer": {
+    "open": true,
+    "dialog_role": null,
+    "focus_inside": false,
+    "escape_closed": true
+  },
+  "browser_terminal": "[INFO] SYSTEM:\n[INFO] SYSTEM:\n[INFO] SYSTEM:\n[INFO] SYSTEM:\n[INFO] SYSTEM:\n[INFO] SYSTEM:\n[INFO] SYSTEM:\n[INFO] SYSTEM:\n[INFO] SYSTEM:\n[INFO] SYSTEM:",
+  "browser_static_state": "Orchestrator\nRUNNING",
+  "browser_theme": "light",
+  "browser_theme_persisted": "light",
+  "browser_offline_state": "Orchestrator\nRUNNING",
+  "browser_untrusted_html": true,
+  "browser_mobile": {
+    "viewport": 390,
+    "documentWidth": 390,
+    "headerWidth": 390,
+    "sidebarRight": 0,
+    "visibleNavigation": false,
+    "hasMenuButton": false,
+    "offscreenHeaderButtons": [
+      "modeToggleBtn",
+      "refreshBtn",
+      "soundToggleBtn",
+      "themeToggleBtn",
+      "shortcutsBtn"
+    ]
+  },
+  "browser_page_errors": []
+}

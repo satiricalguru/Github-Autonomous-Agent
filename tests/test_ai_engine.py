@@ -21,7 +21,9 @@ class TestAIEngine(unittest.IsolatedAsyncioTestCase):
             last_comments=[],
         )
         self.assertIn("should_respond", eval_res)
-        self.assertTrue(eval_res["should_respond"])
+        self.assertFalse(eval_res["should_respond"])
+        self.assertTrue(eval_res["needs_attention"])
+        self.assertFalse(eval_res["provider_verified"])
 
     async def test_issue_actionability_fallback(self):
         engine = AIEngine(AgentConfig(gemini_api_key=None))

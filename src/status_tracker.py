@@ -28,13 +28,17 @@ class StatusTracker:
     def __init__(self, agent_config: Optional[AgentConfig] = None):
         self.config = agent_config or config
         self.status_file = self.config.scratch_dir / "agent_status.json"
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
         self.active_model = self.config.model_name
         self.model_display_name = self.config.model_display_name
-        self.ai_mode = "Gemini API (Online)" if (self.config.gemini_api_key) else "Antigravity Heuristic Engine"
-        self.rate_limit_remaining = 5000
-        self.rate_limit_limit = 5000
+        self.ai_mode = "Provider not verified"
+        self.ai_health = {}
+        self.started_at = None
+        self.heartbeat_at = None
+        self.iterations = {"inbox": 0, "hunter": 0}
+        self.rate_limit_remaining = None
+        self.rate_limit_limit = None
         
         self.overall_status = "INITIALIZING"
         self.inbox_status: Dict[str, Any] = {
@@ -63,15 +67,17 @@ class StatusTracker:
             with open(self.status_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 self.overall_status = data.get("overall_status", self.overall_status)
-                self.inbox_status = data.get("inbox_status", self.inbox_status)
-                self.hunter_status = data.get("hunter_status", self.hunter_status)
+                self.inbox_status = data.get("inbox_worker", data.get("inbox_status", self.inbox_status))
+                self.hunter_status = data.get("hunter_worker", data.get("hunter_status", self.hunter_status))
                 self.recent_events = data.get("recent_events", [])
                 if isinstance(data.get("rate_limit_remaining"), int):
                     self.rate_limit_remaining = data["rate_limit_remaining"]
                 if isinstance(data.get("rate_limit_limit"), int):
                     self.rate_limit_limit = data["rate_limit_limit"]
-                if "dry_run" in data:
-                    self.config.dry_run = bool(data["dry_run"])
+                self.started_at = data.get("started_at")
+                self.heartbeat_at = data.get("heartbeat_at")
+                self.ai_health = data.get("ai_health", {})
+                self.iterations = data.get("iterations", {"inbox": 0, "hunter": 0})
         except Exception:
             pass
 
@@ -108,13 +114,19 @@ class StatusTracker:
                 "next_check": None,
             }
             self.recent_events = []
+            self.ai_health = {}
+            self.started_at = None
+            self.heartbeat_at = None
+            self.iterations = {"inbox": 0, "hunter": 0}
+            self.rate_limit_remaining = None
+            self.rate_limit_limit = None
         self._load()
 
-    def set_rate_limit(self, remaining: int, limit: int):
+    def set_rate_limit(self, remaining: Optional[int], limit: Optional[int]):
         """Record the last observed GitHub API quota."""
         try:
-            self.rate_limit_remaining = int(remaining)
-            self.rate_limit_limit = int(limit)
+            self.rate_limit_remaining = int(remaining) if remaining is not None else None
+            self.rate_limit_limit = int(limit) if limit is not None else None
         except (ValueError, TypeError):
             return
 
@@ -178,7 +190,11 @@ class StatusTracker:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "active_model": self.config.model_name,
             "model_display_name": self.config.model_display_name,
-            "ai_mode": self.ai_mode,
+            "ai_mode": self.ai_health.get("provider", "Provider not verified"),
+            "ai_health": self.ai_health,
+            "started_at": self.started_at,
+            "heartbeat_at": self.heartbeat_at,
+            "iterations": self.iterations,
             "overall_status": self.overall_status,
             "operating_mode": "DRY-RUN (Safe Simulation)" if self.config.dry_run else "LIVE (Real Submissions)",
             "dry_run": self.config.dry_run,
@@ -187,7 +203,7 @@ class StatusTracker:
             "target_languages": self.config.target_languages,
             "target_labels": self.config.target_labels,
             "max_prs_per_day": self.config.max_prs_per_day,
-            "github_user": self.config.github_username or "Authenticated User",
+            "github_user": self.config.github_username or "Unverified account",
             "inbox_worker": self.inbox_status,
             "hunter_worker": self.hunter_status,
             "recent_events": self.recent_events[:10],
