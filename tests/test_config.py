@@ -28,6 +28,29 @@ class TestConfig(unittest.TestCase):
         self.assertIn("denied_repos", cfg.public_settings())
         self.assertIn("max_repo_size_kb", cfg.public_settings())
 
+    def test_ai_provider_config(self):
+        import os
+        from unittest.mock import patch
+
+        # Default fallback
+        with patch.dict(os.environ, {"AI_PROVIDER": ""}, clear=False):
+            cfg = AgentConfig()
+            self.assertEqual(cfg.ai_provider, "auto")
+
+        # Valid provider via env
+        with patch.dict(os.environ, {"AI_PROVIDER": "gemini"}, clear=False):
+            cfg = AgentConfig()
+            self.assertEqual(cfg.ai_provider, "gemini")
+
+        # Invalid provider falls back safely
+        with patch.dict(os.environ, {"AI_PROVIDER": "invalid_vendor"}, clear=False):
+            cfg = AgentConfig()
+            self.assertEqual(cfg.ai_provider, "auto")
+
+        # Explicit initialization
+        cfg = AgentConfig(ai_provider="anthropic")
+        self.assertEqual(cfg.ai_provider, "anthropic")
+
 
 if __name__ == "__main__":
     unittest.main()

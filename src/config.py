@@ -4,13 +4,23 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, cast
 from pydantic import ConfigDict
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
 # Load local .env if present
 load_dotenv()
+
+AIProvider = Literal["auto", "antigravity", "gemini", "anthropic", "openai"]
+
+
+def _safe_ai_provider() -> AIProvider:
+    """Parse AI_PROVIDER defensively, falling back to 'auto' on invalid or unrecognized input."""
+    raw = str(os.getenv("AI_PROVIDER", "auto")).strip().lower()
+    if raw in ("auto", "antigravity", "gemini", "anthropic", "openai"):
+        return cast(AIProvider, raw)
+    return "auto"
 
 
 def _safe_int(env_key: str, default: int, minimum: Optional[int] = None) -> int:
@@ -105,7 +115,7 @@ class AgentConfig(BaseModel):
     """Configuration settings for the GitHub Agent."""
 
     model_config = ConfigDict(validate_assignment=True, validate_default=True, extra="forbid")
-    ai_provider: Literal["auto", "antigravity", "gemini", "anthropic", "openai"] = Field(default_factory=lambda: os.getenv("AI_PROVIDER", "auto"))
+    ai_provider: AIProvider = Field(default_factory=_safe_ai_provider)
     anthropic_api_key: Optional[str] = Field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY"))
     openai_api_key: Optional[str] = Field(default_factory=lambda: os.getenv("OPENAI_API_KEY"))
     openai_base_url: str = Field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"))
