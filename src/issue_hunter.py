@@ -36,10 +36,17 @@ class IssueHunter:
                     if repository.count("/") != 1 or not repository or url != f"https://github.com/{repository}/issues/{item.get('number')}":
                         continue
                     owner, name = repository.split("/")
+                    if self.config.denied_repos and any(repository.lower() == d.lower() for d in self.config.denied_repos):
+                        continue
+                    if self.config.allowed_repos and not any(repository.lower() == a.lower() for a in self.config.allowed_repos):
+                        continue
                     if repository not in repositories:
                         repositories[repository] = await self.client.get_repository(owner, name)
                     metadata = repositories[repository]
                     if metadata.get("archived") or metadata.get("disabled") or metadata.get("stargazers_count", 0) < self.config.min_repo_stars:
+                        continue
+                    if metadata.get("size", 0) > self.config.max_repo_size_kb:
+                        logger.info(f"Skipping {repository}: size {metadata.get('size')}KB exceeds limit {self.config.max_repo_size_kb}KB")
                         continue
                     labels = [v["name"] if isinstance(v, dict) else str(v) for v in item.get("labels", [])]
                     analysis = await self.ai.analyze_issue_actionability(repository, item.get("title", ""), item.get("body") or "", labels)

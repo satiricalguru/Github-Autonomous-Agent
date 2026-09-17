@@ -123,7 +123,8 @@ class AgentConfig(BaseModel):
 
     def public_settings(self) -> dict:
         keys = ("model_name", "ai_provider", "sync_ide_model", "dry_run", "inbox_poll_interval",
-                "issue_hunt_interval", "max_concurrent_tasks", "target_languages", "target_labels", "min_repo_stars")
+                "issue_hunt_interval", "max_concurrent_tasks", "target_languages", "target_labels", "min_repo_stars",
+                "allowed_repos", "denied_repos", "max_repo_size_kb")
         return {key: getattr(self, key) for key in keys}
 
     def save_settings(self):
@@ -225,6 +226,25 @@ class AgentConfig(BaseModel):
             ).split(",")
             if label.strip()
         ]
+    )
+    allowed_repos: List[str] = Field(
+        default_factory=lambda: [
+            repo.strip()
+            for repo in os.getenv("ALLOWED_REPOS", "").split(",")
+            if repo.strip()
+        ]
+    )
+    denied_repos: List[str] = Field(
+        default_factory=lambda: [
+            repo.strip()
+            for repo in os.getenv(
+                "DENIED_REPOS", "GTNewHorizons/GT-New-Horizons-Modpack"
+            ).split(",")
+            if repo.strip()
+        ]
+    )
+    max_repo_size_kb: int = Field(
+        default_factory=lambda: _safe_int("MAX_REPO_SIZE_KB", 250000, minimum=1000)
     )
 
     # Safety & Limits

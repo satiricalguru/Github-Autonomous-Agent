@@ -12,6 +12,67 @@ from pathlib import Path
 from .process import run_process
 
 
+def _get_sandbox_read_paths(repository: Path, directory: Path) -> list:
+    paths = [
+        repository,
+        directory,
+        Path(sys.prefix).resolve(),
+        Path(sys.base_prefix).resolve(),
+        Path(__file__).resolve().parent.parent / ".venv",
+        Path("/System"),
+        Path("/Library"),
+        Path("/usr"),
+        Path("/bin"),
+        Path("/sbin"),
+        Path("/private/etc"),
+        Path("/dev"),
+    ]
+    # Toolchain paths: Homebrew, MacPorts, Intel brew
+    for extra in ("/opt/homebrew", "/usr/local", "/opt/local", "/opt"):
+        p = Path(extra)
+        if p.exists():
+            paths.append(p.resolve())
+
+    # User-level toolchains (Node/NVM, Cargo/Rustup, Go, Pyenv, Local binaries)
+    home = Path.home()
+    for toolchain in (
+        ".nvm",
+        ".cargo",
+        ".rustup",
+        "go",
+        ".local",
+        ".pyenv",
+        ".npm",
+        ".yarn",
+        ".bun",
+    ):
+        p = home / toolchain
+        if p.exists():
+            paths.append(p.resolve())
+
+    # Dynamic detection of binaries in current PATH
+    for bin_name in ("node", "npm", "cargo", "go", "python3", "pytest", "git"):
+        bin_path = shutil.which(bin_name)
+        if bin_path:
+            resolved = Path(bin_path).resolve()
+            if resolved.exists():
+                paths.append(resolved.parent)
+                if resolved.parent.parent.exists():
+                    paths.append(resolved.parent.parent)
+
+    seen = set()
+    unique_paths = []
+    for p in paths:
+        try:
+            resolved = p.resolve()
+            if resolved.exists() and str(resolved) not in seen:
+                seen.add(str(resolved))
+                unique_paths.append(resolved)
+        except (PermissionError, OSError):
+            continue
+    return unique_paths
+
+
 class RepositorySandbox:
     def __init__(self, config):
         self.config = config
@@ -36,21 +97,26 @@ class RepositorySandbox:
         if sys.platform == "darwin" and shutil.which("sandbox-exec"):
             with tempfile.TemporaryDirectory(prefix="github-agent-tests-") as temp:
                 directory = Path(temp).resolve()
-                # Read system/toolchain libraries, repository, and an empty home only.
-                paths = [repository, directory, Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve(),
-                         Path(__file__).resolve().parent.parent / ".venv", Path("/System"), Path("/Library/Frameworks"),
-                         Path("/usr"), Path("/bin"), Path("/sbin"), Path("/private/etc"), Path("/dev")]
+                paths = _get_sandbox_read_paths(repository, directory)
                 reads = " ".join(f"(subpath {json.dumps(str(p))})" for p in paths)
                 profile = f'(version 1) (deny default) (allow process-exec* process-fork) (allow signal (target same-sandbox)) (allow sysctl-read) (allow file-read-metadata) (allow file-read* (literal "/") {reads}) (allow file-write* (subpath {json.dumps(str(repository))}) (subpath {json.dumps(str(directory))}) (literal "/dev/null")) (deny file-write* (subpath {json.dumps(str(repository / ".git"))}))'
+                py_path = f"{repository}:{repository / 'src'}"
+                if "PYTHONPATH" in os.environ:
+                    py_path = f"{py_path}:{os.environ['PYTHONPATH']}"
                 env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(directory), "TMPDIR": str(directory),
-                       "LANG": "en_US.UTF-8", "CI": "true", "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
+                       "LANG": "en_US.UTF-8", "CI": "true", "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1",
+                       "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTHONPATH": py_path}
                 return await run_process(["sandbox-exec", "-p", profile, *command], cwd=repository,
                                          timeout=self.config.test_timeout, env=env)
         if self.config.allow_host_tests and self.config.dry_run:
             # Explicitly scoped escape hatch for trusted local dry-run fixtures only.
             with tempfile.TemporaryDirectory(prefix="github-agent-trusted-test-") as temp:
+                py_path = f"{repository}:{repository / 'src'}"
+                if "PYTHONPATH" in os.environ:
+                    py_path = f"{py_path}:{os.environ['PYTHONPATH']}"
                 env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": temp, "TMPDIR": temp, "CI": "true",
-                       "LANG": "en_US.UTF-8", "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1", "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
+                       "LANG": "en_US.UTF-8", "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1",
+                       "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTHONPATH": py_path}
                 return await run_process(command, cwd=repository, timeout=self.config.test_timeout, env=env)
         raise RuntimeError("Isolated test runtime unavailable. Configure SANDBOX_IMAGE with Docker; host tests are prohibited in live mode.")
 

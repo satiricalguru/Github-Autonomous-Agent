@@ -112,6 +112,59 @@ class TestInboxHunter(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all("is:issue" in q and "stars:" not in q for q in captured_queries))
         mock_client.get_repository.assert_awaited_once_with("fastapi", "fastapi")
 
+    async def test_issue_hunter_filters_denied_and_oversized_repos(self):
+        """Verify issue hunter rejects denied and oversized repositories."""
+        mock_client = MagicMock()
+        mock_client.search_issues = AsyncMock(return_value=[
+            {
+                "number": 1,
+                "title": "Bug in denied repo",
+                "html_url": "https://github.com/bad/repo/issues/1",
+                "body": "Crash",
+                "labels": ["bug"],
+                "repository_url": "https://api.github.com/repos/bad/repo",
+                "assignees": [],
+                "state": "open",
+            },
+            {
+                "number": 2,
+                "title": "Bug in huge repo",
+                "html_url": "https://github.com/huge/repo/issues/2",
+                "body": "Crash",
+                "labels": ["bug"],
+                "repository_url": "https://api.github.com/repos/huge/repo",
+                "assignees": [],
+                "state": "open",
+            },
+        ])
+        mock_client.get_repository = AsyncMock(return_value={"stargazers_count": 5000, "size": 999999})
+        self.cfg.denied_repos = ["bad/repo"]
+        self.cfg.max_repo_size_kb = 250000
+
+        hunter = IssueHunter(client=mock_client, safety=self.safety, ai=self.ai, agent_config=self.cfg, status=self.status)
+        candidates = await hunter.hunt_issues(limit=5)
+        self.assertEqual(len(candidates), 0)
+
+    async def test_issue_hunter_enforces_allowed_repos(self):
+        """Verify issue hunter only considers repositories on the allowed_repos list."""
+        mock_client = MagicMock()
+        mock_client.search_issues = AsyncMock(return_value=[
+            {
+                "number": 10,
+                "title": "Bug in unlisted repo",
+                "html_url": "https://github.com/other/repo/issues/10",
+                "body": "Crash",
+                "labels": ["bug"],
+                "repository_url": "https://api.github.com/repos/other/repo",
+                "assignees": [],
+                "state": "open",
+            },
+        ])
+        self.cfg.allowed_repos = ["target/allowed-repo"]
+        hunter = IssueHunter(client=mock_client, safety=self.safety, ai=self.ai, agent_config=self.cfg, status=self.status)
+        candidates = await hunter.hunt_issues(limit=5)
+        self.assertEqual(len(candidates), 0)
+
     def test_atomic_write_json(self):
         """Verify atomic_write_json cleanly creates files without leaving tmp files."""
         target = Path(self.temp_dir.name) / "test_atomic.json"
