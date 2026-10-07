@@ -90,6 +90,14 @@ class StatusTracker:
         except Exception as e:
             logger.warning(f"Failed to persist agent status: {e}")
 
+    def clear_history(self):
+        """Drop recent events and pass counters; dedupe state in agent_state.json is kept."""
+        with self._lock:
+            self.recent_events = []
+            self.iterations = {"inbox": 0, "hunter": 0}
+            self.inbox_status["handled_count"] = 0
+        self.save()
+
     def rebind(self, agent_config: Optional[AgentConfig] = None):
         """Re-point this tracker at a different config (tests/isolated runs)."""
         if agent_config is not None:

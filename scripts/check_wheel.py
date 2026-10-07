@@ -22,7 +22,7 @@ server = web_dashboard.start_web_server(0)
 try:
  base = f"http://127.0.0.1:{server.server_address[1]}"
  with httpx.Client(base_url=base, trust_env=False) as client:
-  for path, needle in [("/", "settingsForm"), ("/dist/app.js", "MissionControlApp"), ("/dist/dom.js", "escapeHtml"), ("/css/layout.css", "mobile-open")]:
+  for path, needle in [("/", "Open dashboard"), ("/dashboard", "settingsForm"), ("/js/field.js", "AgentField"), ("/classic", "settingsForm"), ("/dist/app.js", "MissionControlApp"), ("/dist/dom.js", "escapeHtml"), ("/css/layout.css", "mobile-open")]:
    response = client.get(path)
    assert response.status_code == 200 and needle in response.text, path
   assert client.get("/api/status").json()["status"] == "STOPPED"

@@ -150,7 +150,8 @@ class DashboardHTTPHandler(http.server.BaseHTTPRequestHandler):
         if path == "/api/status":
             self._send_json(self._status())
             return
-        file = (FRONTEND_DIR / ("index.html" if path in ("/", "/index.html") else path.lstrip("/"))).resolve()
+        routes = {"/": "home.html", "/dashboard": "dashboard.html", "/classic": "index.html"}
+        file = (FRONTEND_DIR / routes.get(path, path.lstrip("/"))).resolve()
         if FRONTEND_DIR.resolve() not in file.parents or not file.is_file():
             self._send_json({"status": "error", "error": "Asset not found"}, 404)
             return

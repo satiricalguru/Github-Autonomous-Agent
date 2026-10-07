@@ -226,14 +226,19 @@ def cmd_stop():
     console.print(f"[yellow]Agent acknowledged stop: {result['overall_status']}[/yellow]")
 
 
-async def cmd_start(dry_run: Optional[bool] = None, web_port: int = 3000):
-    """Start continuous autonomous loop with graceful shutdown."""
-    if dry_run is not None:
-        config.dry_run = dry_run
+async def cmd_start(dry_run: Optional[bool] = None, web_port: int = 3000, keep_history: bool = False):
+    """Start continuous autonomous loop with graceful shutdown.
 
+    Always starts in LIVE mode unless --dry-run is passed, and clears the task/event
+    history from previous runs unless --keep-history is passed. Dedupe state
+    (handled notifications/issues, submitted PRs) is always kept.
+    """
     config.load_settings()
-    if dry_run is not None:
-        config.dry_run = dry_run
+    config.dry_run = bool(dry_run)
+    config.save_settings()
+    if not keep_history:
+        task_tracker.clear_history()
+        status_tracker.clear_history()
     orchestrator = AutonomousOrchestrator(config, web_port=web_port)
 
     # Register OS signal handlers
@@ -268,6 +273,7 @@ def _main():
     start_parser_mode.add_argument("--dry-run", action="store_true", help="Run in dry-run mode (no live writes)")
     start_parser_mode.add_argument("--live", action="store_true", help="Run in live mode (submits PRs and replies)")
     start_parser.add_argument("--port", type=int, default=3000, help="Port for live web dashboard (default: 3000)")
+    start_parser.add_argument("--keep-history", action="store_true", help="Keep task and event history from previous runs")
 
     # Status command
     subparsers.add_parser("status", help="Check agent status, credentials, and rate limits")
@@ -322,7 +328,7 @@ def _main():
     elif args.command == "stop":
         cmd_stop()
     elif args.command == "start" or args.command is None:
-        asyncio.run(cmd_start(dry_run=_resolve_dry_run(args), web_port=getattr(args, "port", 3000)))
+        asyncio.run(cmd_start(dry_run=_resolve_dry_run(args), web_port=getattr(args, "port", 3000), keep_history=getattr(args, "keep_history", False)))
     else:
         parser.print_help()
 

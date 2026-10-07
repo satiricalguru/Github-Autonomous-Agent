@@ -31,7 +31,7 @@ def test_dashboard_desktop_mobile_and_error_flows(cfg, tmp_path):
             page = browser.new_page(viewport={"width": 1440, "height": 1000})
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
-            page.goto(base)
+            page.goto(base + "/classic")
             page.wait_for_load_state("networkidle")
             assert page.locator("#executionState").inner_text() == "STOPPED"
             for tab in ("overview", "tasks", "workers", "terminal", "settings"):

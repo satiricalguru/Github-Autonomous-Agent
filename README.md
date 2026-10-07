@@ -1,126 +1,338 @@
-# Autonomous GitHub Agent
+<div align="center">
 
-A Python agent with a browser dashboard for continuous GitHub inbox triage, issue discovery, and verified draft PR creation. It can invoke models through the authenticated Antigravity CLI or use a configured Gemini, Anthropic, or OpenAI-compatible API.
+<img src="frontend/img/github-mark.svg" width="72" alt="GitHub mark">
 
-The scheduler repeats inbox and issue workflows while its process is alive. Each model operation is a finite inference request. Polling waits, quota limits, pauses, and the rolling submission cap can suspend work. Closing the process, host sleep, or a crash interrupts service; this application does not install a background supervisor.
+# GitHub Autonomous Agent
 
-## Setup
+**Your GitHub, on autopilot.**<br>
+Keeps your notifications at inbox zero, hunts open-source bugs, and opens a pull request only after the tests pass.
 
-Requires Python 3.10+, Git, and GitHub authentication on macOS or Linux/POSIX. For Antigravity inference, install and authenticate `agy`, then inspect the model IDs with `agy models`. Repository verification requires macOS `sandbox-exec`, or Docker and an appropriate prebuilt test image on other hosts.
+[![CI](https://github.com/satiricalguru/Github-Autonomous-Agent/actions/workflows/ci.yml/badge.svg)](https://github.com/satiricalguru/Github-Autonomous-Agent/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)
+![Antigravity](https://img.shields.io/badge/models-Google%20Antigravity-6366f1)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-0d1117)
+![License](https://img.shields.io/badge/license-MIT-10b981)
+
+<img src="docs/media/hero-intro.gif" width="860" alt="Thousands of particles assemble into the GitHub logo on the agent's homepage">
+
+[Quick start](#-quick-start) · [Connect your account](#-connect-your-own-account) · [Dashboard](#-mission-control-dashboard) · [How it works](#-how-it-works) · [Safety](#-guardrails) · [FAQ](#-faq)
+
+</div>
+
+---
+
+## ✨ What it does
+
+<table>
+<tr>
+<td width="33%" valign="top">
+
+### 📬 Triage
+Reads your review requests, mentions and discussions. An AI model decides whether you're needed, with a confidence score and its reasoning. Then it replies or marks the thread done.
+
+</td>
+<td width="33%" valign="top">
+
+### 🔎 Hunt
+Searches high-star repos for open, unassigned `good first issue`, `help wanted` and `bug` issues. It skips anything already assigned or with an open PR.
+
+</td>
+<td width="33%" valign="top">
+
+### 🛠️ Ship
+Clones the repo and proves the bug with a failing test before fixing it. When the suite goes green, it opens a **draft** PR with the test output attached.
+
+</td>
+</tr>
+</table>
+
+<div align="center">
+<img src="docs/media/home-scroll.gif" width="760" alt="Scrolling the homepage: the particle field morphs into a new shape for each section">
+<br><sub>The homepage's WebGL particle field changes shape as you scroll. <a href="docs/media/home-scroll.mp4">Watch the HD video</a>.</sub>
+</div>
+
+---
+
+## 🚀 Quick start
+
+> [!NOTE]
+> You need **Python 3.10+**, **Git**, the **GitHub CLI** (`gh`), and the **Antigravity CLI** (`agy`). It runs on macOS (built-in sandbox) or Linux (Docker).
 
 ```bash
+git clone https://github.com/satiricalguru/Github-Autonomous-Agent.git
+cd Github-Autonomous-Agent
 python3 -m venv .venv
 .venv/bin/python -m pip install -c requirements.lock -e '.[dev]'
 cp .env.example .env
 ```
 
-Set `GITHUB_TOKEN` or authenticate `gh auth login`. GitHub authentication and model authentication are independent. Do not commit `.env` or scratch state.
+Then [connect your account](#-connect-your-own-account) and start it:
+
+```bash
+./run.sh doctor          # checks GitHub, the AI model and the test sandbox
+./run.sh start --dry-run # try it first: drafts only, nothing is posted
+```
+
+Open **http://127.0.0.1:3000** for the homepage, or **http://127.0.0.1:3000/dashboard** for mission control.
+
+---
+
+## 🔐 Connect your own account
+
+The agent acts **as you**: replies, forks and PRs come from your GitHub account. It needs two separate sign-ins, one for GitHub and one for the AI models.
+
+```mermaid
+flowchart LR
+    A["1. GitHub sign-in<br/><code>gh auth login</code>"] --> C{"./run.sh doctor"}
+    B["2. Antigravity sign-in<br/><code>agy</code>"] --> C
+    C -->|all green| D["3. Dry run<br/><code>start --dry-run</code>"]
+    D -->|you trust it| E["4. Go live<br/><code>start</code>"]
+```
+
+### Step 1: GitHub
+
+**Option A: GitHub CLI (recommended).** Nothing to paste, and the agent finds the token on its own.
+
+```bash
+gh auth login        # choose GitHub.com → HTTPS → log in with a web browser
+gh auth status       # should say: Logged in to github.com account <you>
+```
+
+**Option B: a personal access token.** Use this for servers or when you don't want `gh`.
+
+1. Go to **GitHub → Settings → Developer settings → [Personal access tokens](https://github.com/settings/tokens)**.
+2. Create a token with these scopes: `repo` (fork, push, open PRs), `notifications` (read your inbox), `read:discussion` and `write:discussion` (discussion replies), and `workflow` (only if target repos change workflow files).
+3. Put it in `.env`:
+
+```dotenv
+GITHUB_TOKEN=ghp_your_token_here
+GITHUB_USERNAME=your-github-username
+```
+
+> [!IMPORTANT]
+> `.env` holds your token. It's already in `.gitignore`. Never commit it or paste it anywhere public.
+
+### Step 2: AI models (Google Antigravity)
+
+The agent calls models through your Antigravity account, so you don't need an API key.
+
+1. Install the **Antigravity CLI** (`agy`) that ships with Google Antigravity, and make sure `agy` is on your `PATH`.
+2. Run `agy` once in a terminal and complete the sign-in it asks for.
+3. Confirm it works:
+
+```bash
+agy models   # lists the models your account can use
+```
+
+Pick a model in `.env`. The default is fast and reliable:
+
+```dotenv
+AI_PROVIDER=antigravity
+MODEL_NAME=gemini-3.8-flash-high
+```
+
+<details>
+<summary><b>Prefer a direct API key instead?</b> (Gemini, Anthropic or any OpenAI-compatible endpoint)</summary>
+
+```dotenv
+AI_PROVIDER=gemini        # or anthropic, openai
+MODEL_NAME=gemini-3.8-flash
+GEMINI_API_KEY=...        # or ANTHROPIC_API_KEY / OPENAI_API_KEY (+ OPENAI_BASE_URL)
+```
+
+</details>
+
+### Step 3: Check everything
 
 ```bash
 ./run.sh doctor
-./run.sh start --dry-run --port 3000
 ```
 
-Open [Mission Control](http://127.0.0.1:3000). The dashboard has Overview, Tasks, Workers, Terminal, and Settings tabs. `doctor` makes a minimal real inference request, checks GitHub authentication/quota, and runs a disposable isolated test. It does not process notifications or submit contributions.
+`doctor` makes one real model call, checks your GitHub login and API quota, and runs a throwaway sandboxed test. It never touches your inbox or opens a PR.
 
-When ready to authorize GitHub writes:
+### Step 4: Dry run, then go live
 
 ```bash
-./run.sh start --live --port 3000
+./run.sh start --dry-run   # reads GitHub and drafts everything; posts nothing
+./run.sh start             # LIVE: replies, marks threads done, opens draft PRs
 ```
 
-`--live` enables replies, notification read/archive actions, forks, pushes, and draft PRs. Dry-run is the default. Dry-run still reads GitHub, invokes models, clones repositories, runs isolated tests, edits disposable checkouts, and commits locally. It does not consume live submission history or mark issues permanently handled.
+> [!WARNING]
+> **`start` runs in live mode by default** and clears the previous run's task history. Use `--dry-run` until you're happy with what it drafts, and `--keep-history` to keep old tasks. The agent always remembers which threads and issues it already handled, so it never replies to the same one twice.
 
-## Execution controls
+---
 
-The dashboard's Pause cancels active cycles, waits for their owned work to terminate, and closes admission of new work. Resume reopens admission. Worker buttons queue another cycle; Hunt discovers candidates without solving them, while Solve runs discovery and repair. Buttons are unavailable when there is no running controller.
+## 🛰️ Mission control dashboard
 
-Stop from the dashboard, Ctrl+C, SIGTERM, or a separate terminal:
+<div align="center">
+<img src="docs/media/dashboard-tour.gif" width="820" alt="Scrolling through the dashboard: overview, workers, tasks, activity log and settings">
+</div>
+
+| | |
+|---|---|
+| **Overview**: live counters, a 24-hour activity chart, GitHub API budget, AI engine health. <br><img src="docs/media/dashboard-overview.png" alt="Dashboard overview"> | **Workers**: what the inbox monitor, issue hunter and PR solver are doing right now. <br><img src="docs/media/dashboard-workers.png" alt="Worker fleet"> |
+| **Tasks**: filter, search, and click any row for the AI's reasoning, diff and test output. <br><img src="docs/media/dashboard-tasks.png" alt="Tasks table"> | **Activity**: the live event stream, with error filtering and search. <br><img src="docs/media/dashboard-activity.png" alt="Activity log"> |
+
+From the top bar you can **Pause/Resume**, trigger a pass with **Run now** (inbox, hunt or solve), or **Stop**. The **Settings** section switches between live and dry run, changes the model, and tunes concurrency and polling intervals.
+
+<img src="docs/media/dashboard-settings.png" alt="Settings: mode, model, concurrency and polling intervals">
+
+---
+
+## ⚙️ How it works
+
+```mermaid
+flowchart TD
+    subgraph Inbox["📬 Inbox loop · every 60s"]
+        N[Fetch notifications] --> T{AI: do you need<br/>to respond?}
+        T -->|no| R[Mark read and done]
+        T -->|yes, confidence ≥ 0.85| P[Post reply] --> R
+        N -->|CI runs, releases| S[Skip, left for you]
+    end
+    subgraph Solver["🛠️ Issue loop · every 5 min"]
+        H[Search issues] --> F{Unassigned?<br/>No open PR?<br/>≥ 1000 stars?}
+        F -->|yes| A{AI: fixable?}
+        A -->|yes| C[Clone and run baseline tests]
+        C --> RT[Write failing regression test 🔴]
+        RT --> FX[Apply AI fix → tests pass 🟢]
+        FX --> PR[Fork, push, open draft PR]
+    end
+```
+
+Every PR has to clear all of these gates, or it never gets opened:
+
+1. The repo's existing tests pass before any change.
+2. A **new** regression test fails on the current code, proving the bug.
+3. The fix makes that test pass and keeps every existing test green.
+4. The exact commit is re-verified, with no stray changes.
+5. The PR is opened as a **draft**, with full test evidence in the description.
+
+---
+
+## 🛡️ Guardrails
+
+| Guardrail | What it means |
+|---|---|
+| 🧪 **Tests or nothing** | A red suite blocks the commit. Untested code never leaves the sandbox. |
+| 🧱 **Sandboxed tests** | Test runs have no network and can't touch your home folder or credentials (macOS `sandbox-exec` or Docker). |
+| 🚦 **Rate-limit aware** | It backs off before your GitHub API quota runs low. |
+| 🧾 **Daily PR cap** | At most `MAX_PRS_PER_DAY` (default 5) live PRs per rolling 24 hours. |
+| 🤝 **Etiquette** | Follows `CONTRIBUTING.md` and PR templates, signs off commits (DCO), and skips CLA repos you haven't accepted. |
+| 🎯 **Scope control** | `ALLOWED_REPOS`, `DENIED_REPOS`, `MIN_REPO_STARS`, `TARGET_LANGUAGES` and `TARGET_LABELS` in `.env`. |
+| 🔒 **Local only** | The dashboard binds to `127.0.0.1`, and control actions need a session token. |
+
+---
+
+## 🤖 Models
+
+Any model your Antigravity account lists in `agy models` works. These have been tested end to end:
+
+| Model | Speed | Good for |
+|---|---|---|
+| `gemini-3.8-flash-high` ⭐ default | ~20s | Everything; best balance |
+| `gemini-3.8-flash-low` | ~20s | High-volume inbox triage |
+| `gemini-3.1-pro-high` | ~35s | Harder repairs |
+| `claude-sonnet-4-6` | ~20s | Careful code patches |
+| `claude-opus-4-6-thinking` | ~20s | The trickiest fixes |
+| `gpt-oss-120b-medium` | slow | Fallback |
+
+Up to two model calls run at once (`ANTIGRAVITY_MAX_PARALLEL`), and a failed call is retried once. You can switch models live from the dashboard's Settings.
+
+---
+
+## 🧰 Commands
 
 ```bash
-./run.sh stop
+./run.sh start [--dry-run] [--keep-history] [--port 3000]  # run continuously (live by default)
+./run.sh stop                                              # stop a running agent
+./run.sh doctor                                            # health check, no writes
+./run.sh status                                            # worker states in the terminal
+./run.sh tasks                                             # recent task table
+./run.sh inbox [--live]                                    # one inbox pass (dry run unless --live)
+./run.sh hunt --limit 5                                    # find candidate issues only
+./run.sh solve --auto --limit 1 [--live]                   # find and fix one issue
+./run.sh web --port 3001                                   # dashboard only, no agent
 ```
 
-CLI Stop sends an authenticated request to the running process and reports `STOPPING` when acknowledged. The process then terminates owned work, closes its control server, finalizes tasks, and records `STOPPED`. A request cannot reverse an external action GitHub already accepted. Only one execution owner can use a scratch directory at a time.
+Pages: `/` homepage · `/dashboard` mission control · `/classic` the original console.
 
-Other commands:
+<details>
+<summary><b>All <code>.env</code> settings</b></summary>
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GITHUB_TOKEN` / `GITHUB_USERNAME` | from `gh` | Your GitHub identity |
+| `AI_PROVIDER` | `antigravity` | `antigravity`, `gemini`, `anthropic`, `openai` or `auto` |
+| `MODEL_NAME` | `gemini-3.8-flash-high` | Model ID |
+| `ANTIGRAVITY_MAX_PARALLEL` | `2` | Concurrent Antigravity calls |
+| `INBOX_POLL_INTERVAL` | `60` | Seconds between inbox passes |
+| `ISSUE_HUNT_INTERVAL` | `300` | Seconds between issue hunts |
+| `MAX_CONCURRENT_TASKS` | `3` | Parallel repairs |
+| `MAX_PRS_PER_DAY` | `5` | Rolling 24h live PR cap |
+| `TARGET_LANGUAGES` | `python,typescript,javascript,go,rust` | Languages to hunt |
+| `TARGET_LABELS` | `good first issue,help wanted,bug` | Labels to hunt |
+| `MIN_REPO_STARS` | `1000` | Minimum repo popularity |
+| `ALLOWED_REPOS` / `DENIED_REPOS` | empty | Restrict or exclude repos |
+| `ENGAGE_DISCUSSIONS` | `true` | Allow replies on Discussions |
+| `SANDBOX_IMAGE` | empty | Docker image with test dependencies (needed on Linux) |
+| `ACCEPTED_CLA_REPOS` | empty | Repos whose CLA you've signed |
+
+</details>
+
+---
+
+## ❓ FAQ
+
+<details>
+<summary><b>Will it spam people with PRs?</b></summary>
+
+No. PRs are drafts, capped per day, opened only after a failing test proves the bug and the fix turns it green. It never takes an issue that's assigned or already has a linked PR.
+
+</details>
+
+<details>
+<summary><b>Why haven't I seen any PRs yet?</b></summary>
+
+Most real projects need their own dependencies installed before their tests can run. The sandbox has no network, so it can't install them. On macOS, only repos whose tests run with plain `pytest` will pass the baseline today. For broad coverage, build a Docker image with common toolchains and set `SANDBOX_IMAGE`.
+
+</details>
+
+<details>
+<summary><b>Can I use it without Antigravity?</b></summary>
+
+Yes. Set `AI_PROVIDER` to `gemini`, `anthropic` or `openai` and add that provider's API key.
+
+</details>
+
+<details>
+<summary><b>Does it keep running when I close the terminal?</b></summary>
+
+No. It runs while the process is alive. Use `tmux`, `screen`, or a launchd/systemd service if you want it always on.
+
+</details>
+
+<details>
+<summary><b>Where is my data stored?</b></summary>
+
+Everything stays local in `scratch/`: task history, handled threads, settings and the control token. Nothing is sent anywhere except GitHub and your AI provider.
+
+</details>
+
+---
+
+## 🧑‍💻 Development
 
 ```bash
-./run.sh status
-./run.sh tasks
-./run.sh inbox --dry-run
-./run.sh inbox --mark-done --dry-run
-./run.sh hunt --limit 5
-./run.sh solve --auto --limit 1 --dry-run
-./run.sh solve --no-auto --limit 5  # discovery only
-./run.sh web --port 3001          # standalone dashboard; no execution controller
+cd frontend && npm ci && npm run build && cd ..   # build and sync dashboard assets
+.venv/bin/python -m pytest -q                     # test suite
+node scripts/capture_readme_media.mjs http://127.0.0.1:3000 docs/media && scripts/build_readme_media.sh   # refresh README media
 ```
 
-Standalone dashboard settings apply to the next agent start. Use the dashboard served by `start` to control the running agent. Settings are validated as a complete request and persisted in `scratch/settings.json`; saving active settings cancels the current work before applying them. Explicit CLI `--dry-run`/`--live` overrides the saved mode on start.
+Technical deep dives: [audit findings](docs/audits/2026-09-16/AUDIT.md) and [repair evidence](docs/audits/2026-09-16/REPAIRS.md).
 
-## Models
-
-`AI_PROVIDER=antigravity` invokes `agy` in print mode, plan mode, an empty temporary workspace, with CLI sandbox restrictions and slash command expansion disabled. It never adds the repository checkout to that workspace. Repository source needed for a repair is supplied in the prompt. Antigravity CLI permissions and account quotas still apply; the adapter does not bypass them or provide a persistent reasoning session.
-
-Examples of IDs returned by the installed CLI:
-
-- `gemini-3.8-flash-high`, `gemini-3.8-flash-medium`, `gemini-3.8-flash-low`
-- `gemini-3.7-flash-high`, `gemini-3.6-flash-medium`, `gemini-3.1-pro-high`
-- `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, `gpt-oss-120b-medium`
-
-Availability can change; use `agy models` for your installation/account. Legacy family aliases are translated only for the Antigravity adapter. Direct API providers require their own key and a model ID supported by that endpoint. Claude requests go to Anthropic; they are never sent to Gemini.
-
-`AI_PROVIDER=auto` chooses the model family's configured API key, otherwise the installed Antigravity CLI. Select a provider explicitly to avoid ambiguity. Health shows `UNVERIFIED`, `ONLINE`, `UNAVAILABLE`, or `DEGRADED`; successful inference establishes `ONLINE`. Model failure cannot produce a fabricated repair or fallback reply. Discovery can use a heuristic score, but source repair still requires a valid model-generated patch.
-
-Manual model selection remains stable. Optional `SYNC_IDE_MODEL=true` reads only the transcript identified by `ANTIGRAVITY_CONVERSATION_ID`; it does not scan other conversations. Transcript synchronization is a selection convenience, independent of inference authentication.
-
-Minimal integration checks, without GitHub writes:
-
-```bash
-.venv/bin/python scripts/check_models.py gemini-3.8-flash-high claude-sonnet-4-6 gpt-oss-120b-medium
-```
-
-## Contribution verification
-
-Discovery searches issues, excludes pull requests, deduplicates results, and verifies repository stars, assignment, archive state, and open linked PRs. Eligibility is checked again before submission. GitHub errors and unknown quota block work rather than appearing as a clean inbox or full quota.
-
-Each repair uses a fresh checkout and a dedicated `codex/` branch. The solver supplies relevant source, baseline output, contributing instructions, and available PR templates to the model. It requires all of the following:
-
-1. A passing, nonempty baseline test suite.
-2. A sufficiently confident source-file patch that preserves existing tests, and a new regression test.
-3. A failing regression before the fix with assertion evidence.
-4. Passing tests after the fix.
-5. Passing verification of the committed changes without unsubmitted source changes.
-6. Checked fork discovery/creation and a successful push before draft PR creation.
-
-No detected tests, disabled verification, an unsafe/symlink patch target, failing tests, failed pushes, or linked/assigned issues block submission. Cancellation and failed attempts remain retryable; only confirmed live PRs count toward the rolling cap. Claims reserve submission slots transactionally. DCO sign-off is included; repositories with a detected CLA requirement need prior acceptance configured in `ACCEPTED_CLA_REPOS`.
-
-This is a bounded single-patch repair attempt, not universal repository support or proof of all behavior. Relevant source context is limited. Arbitrary natural-language contribution rules and repository-specific lint/build commands require additional integration. A passing generic suite does not establish full project correctness. Draft PRs require human review.
-
-## Isolation and persistence
-
-Docker test runs have no network, an empty home, no GitHub credentials, read-only Git metadata, dropped capabilities, and CPU/memory/process limits. Prepare dependencies in `SANDBOX_IMAGE` before running; the agent does not automatically install untrusted repository dependencies on the host. The macOS sandbox restricts reads, confines writes to the checkout and temporary home, denies network and Git metadata writes, and enforces a timeout with owned process-group termination. It does not provide Docker's resource limits; use a container for stronger isolation.
-
-`ALLOW_HOST_TESTS=true` is an explicit escape hatch for trusted local dry-run fixtures only. Host execution is prohibited in live mode. Unsupported or unavailable test toolchains fail closed.
-
-SQLite sidecars are authoritative for handled work, PR history, slot claims, and task history. JSON files remain compatibility snapshots. Existing valid JSON history migrates on first use. Corrupt history stops initialization instead of resetting caps. Interrupted tasks are marked cancelled and orphaned submission reservations are cleared under the execution lease on the next start. The dashboard displays the most recent 100 tasks; its task/PR counters cover that window.
-
-The control server binds to loopback. Mutations require an authenticated session plus a control header, or the runtime bearer token; Host, Origin, content type, and request size are checked. Keep `scratch/runtime.json` private. Do not expose this development HTTP server publicly.
-
-## Development and validation
-
-```bash
-cd frontend
-npm ci
-npm run build
-cd ..
-.venv/bin/python -m pip install playwright
-.venv/bin/python -m playwright install chromium
-.venv/bin/python -m pytest -q
-.venv/bin/python -m pip wheel . --no-deps -w dist
-.venv/bin/python scripts/check_wheel.py dist/*.whl
-```
-
-Frontend builds synchronize the shipped HTML/CSS/JavaScript into package resources. The wheel smoke check installs outside the checkout and verifies the real dashboard assets and API. CI runs Python tests on 3.10/3.12/3.14 and a Chromium/build/package job. `requirements.lock` pins the resolved shared dependency versions as pip constraints; platform/Python-specific dependencies may still be resolved separately.
-
-See `docs/audits/2026-09-16/AUDIT.md` for the original findings and `REPAIRS.md` in the same directory for repair evidence and remaining operational limits. No multi-hour availability or complete accessibility conformance guarantee is made.
+<div align="center">
+<br>
+<img src="frontend/img/github-mark.svg" width="28" alt="">
+<br>
+<sub>MIT © <a href="https://github.com/satiricalguru">Jatin Pandey</a> · Not affiliated with GitHub, Inc. or Google.</sub>
+</div>

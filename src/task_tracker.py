@@ -60,6 +60,13 @@ class TaskTracker:
         self._load()
         atomic_write_json(self.tasks_file, self.tasks)
 
+    def clear_history(self):
+        """Drop all task records; used at agent start so each run begins with a clean history."""
+        with self._lock, self._db() as db:
+            db.execute("DELETE FROM tasks")
+        self.tasks = []
+        atomic_write_json(self.tasks_file, self.tasks)
+
     def rebind(self, agent_config=None):
         if agent_config is not None:
             self.config = agent_config

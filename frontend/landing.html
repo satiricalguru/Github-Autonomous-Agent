@@ -1,0 +1,258 @@
+<title>Mission Control Agent</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=Geist:wght@400;500&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: fixed WebGL particle field behind a scroll narrative; each section morphs the field (orbit → branch helix → PR grid → merged core).
+   Tokens from frontend/css/tokens.css (Cyber-Obsidian), tempered by Linear / Raycast / Factory on Refero. Single dark look by choice. */
+:root{
+  color-scheme:dark;
+  --bg:#06080d; --surface:rgba(13,17,24,.72); --line:rgba(255,255,255,.08);
+  --fg:#f0f6fc; --muted:#8b949e; --dim:#6e7681;
+  --indigo:#6366f1; --cyan:#38bdf8; --green:#10b981; --amber:#f59e0b; --rose:#f43f5e;
+  --display:"Bricolage Grotesque",ui-sans-serif,system-ui,sans-serif;
+  --body:"Geist",ui-sans-serif,system-ui,sans-serif;
+  --mono:"Geist Mono",ui-monospace,"SF Mono",Menlo,monospace;
+}
+html,body{background:var(--bg);color:var(--fg)}
+body{font:16px/1.6 var(--body);padding-inline:clamp(16px,5vw,72px);overflow-x:hidden}
+#gl{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:block}
+.veil{position:fixed;inset:0;z-index:1;pointer-events:none;background:radial-gradient(120% 80% at 50% 120%,transparent 40%,var(--bg) 100%)}
+main{position:relative;z-index:2;max-width:1120px;margin:0 auto}
+nav{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;display:flex;justify-content:space-between;align-items:center;gap:16px;padding-block:18px;font:500 13px var(--mono);color:var(--muted)}
+nav b{color:var(--fg);font-weight:500;display:flex;gap:10px;align-items:center}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 12px var(--green);animation:pulse 2s infinite}
+@keyframes pulse{50%{opacity:.35}}
+.progress{position:fixed;left:0;top:0;height:2px;width:100%;transform-origin:0 50%;transform:scaleX(0);background:linear-gradient(90deg,var(--indigo),var(--cyan),var(--green));z-index:6}
+section{min-height:88vh;display:flex;flex-direction:column;justify-content:center;gap:24px;padding-block:12vh}
+.eyebrow{font:500 12px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--cyan)}
+h1,h2{font-family:var(--display);font-weight:800;letter-spacing:-.03em;text-wrap:balance;margin:0;line-height:.95}
+h1{font-size:clamp(48px,9vw,128px);max-width:11ch}
+h1 em{font-style:normal;background:linear-gradient(100deg,var(--indigo),var(--cyan) 60%,var(--green));-webkit-background-clip:text;background-clip:text;color:transparent}
+h2{font-size:clamp(36px,6vw,80px);max-width:13ch}
+p.lede{font-size:clamp(17px,1.6vw,20px);color:var(--muted);max-width:58ch;margin:0}
+.cta{display:flex;flex-wrap:wrap;gap:12px}
+.btn{font:500 14px var(--mono);padding:12px 18px;border-radius:8px;border:1px solid var(--line);color:var(--fg);background:var(--surface);backdrop-filter:blur(16px);text-decoration:none;transition:border-color .2s,transform .2s}
+.btn:hover,.btn:focus-visible{border-color:var(--indigo);transform:translateY(-1px);outline:none}
+.btn.primary{background:var(--indigo);border-color:var(--indigo)}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:clamp(24px,5vw,72px);align-items:center}
+.split>*{min-width:0}
+.term{font:13px/1.75 var(--mono);background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px 20px;backdrop-filter:blur(20px);overflow-x:auto;white-space:pre}
+.term .k{color:var(--dim)} .term .g{color:var(--green)} .term .c{color:var(--cyan)} .term .a{color:var(--amber)} .term .p{color:#a855f7}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.stat{background:rgba(6,8,13,.82);backdrop-filter:blur(16px);padding:22px}
+.stat b{display:block;font:800 clamp(28px,4vw,44px)/1 var(--display);font-variant-numeric:tabular-nums}
+.stat span{font:12px var(--mono);color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+.rules{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.rule{border-top:1px solid var(--line);padding-top:16px}
+.rule h3{font:500 15px var(--mono);margin:0 0 6px;color:var(--fg)}
+.rule p{margin:0;color:var(--muted);font-size:15px}
+.chip{display:inline-flex;gap:6px;align-items:center;font:500 11px var(--mono);padding:3px 8px;border-radius:99px;border:1px solid currentColor;width:max-content}
+.reveal{transform:translateY(0);opacity:1}
+footer{position:relative;z-index:2;padding-block:48px;font:12px var(--mono);color:var(--dim);text-align:center}
+@media (max-width:820px){.split,.rules{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}nav span.hide{display:none}}
+@media (prefers-reduced-motion:reduce){.dot{animation:none}}
+</style>
+
+<canvas id="gl" aria-hidden="true"></canvas>
+<div class="veil"></div>
+<div class="progress" id="progress"></div>
+
+<main>
+  <nav><b><i class="dot"></i>agent://mission-control</b><span class="hide">inbox 0 · 3 PRs in flight</span></nav>
+
+  <section data-shape="0">
+    <span class="eyebrow">Autonomous GitHub agent</span>
+    <h1>Ship fixes while you <em>sleep</em>.</h1>
+    <p class="lede">It reads your notifications, answers reviews, then hunts unassigned bugs in high-star repos, reproduces them, writes a minimal fix and opens a PR only after the local test suite passes.</p>
+    <div class="cta"><a class="btn primary" href="#loop">See the loop</a><a class="btn" href="#rules">Read the guardrails</a></div>
+  </section>
+
+  <section data-shape="1" id="loop">
+    <div class="split">
+      <div style="display:grid;gap:20px">
+        <span class="eyebrow">01 · Triage</span>
+        <h2>Inbox zero, by default.</h2>
+        <p class="lede">Review requests, mentions and discussions are scored for whether they need a reply. Drafts stay drafts in <code>DRY_RUN</code>; handled threads get marked read.</p>
+      </div>
+<div class="term"><span class="k">$</span> agent inbox --poll
+<span class="c">●</span> review_requested  vercel/next.js#71204
+<span class="c">●</span> mention           astral-sh/ruff#14388
+<span class="k">○</span> ci_activity       skipped · no reply needed
+<span class="g">✓</span> drafted 2 replies <span class="k">(dry-run)</span>
+<span class="g">✓</span> marked 7 threads read</div>
+    </div>
+  </section>
+
+  <section data-shape="2">
+    <div class="split">
+<div class="term"><span class="k">$</span> agent hunt --label "good first issue"
+<span class="p">⎇</span> fork  pydantic/pydantic → fix/validator-alias
+<span class="a">▲</span> repro  test_alias_generator … FAILED
+<span class="k">  patch: 1 file, +6 −2</span>
+<span class="g">✓</span> pytest  1,842 passed in 41.3s
+<span class="g">✓</span> PR opened · CONTRIBUTING.md followed</div>
+      <div style="display:grid;gap:20px">
+        <span class="eyebrow">02 · Branch &amp; fix</span>
+        <h2>Reproduce first. Patch second.</h2>
+        <p class="lede">No assignee, no open PR, no duplicate effort. The bug is reproduced with a failing test before a single line of the fix is written.</p>
+      </div>
+    </div>
+  </section>
+
+  <section data-shape="3">
+    <span class="eyebrow">03 · Merge</span>
+    <h2>Evidence in every PR.</h2>
+    <div class="stats">
+      <div class="stat"><b data-count="148">0</b><span>PRs opened</span></div>
+      <div class="stat"><b data-count="91" data-suffix="%">0</b><span>Merge rate</span></div>
+      <div class="stat"><b data-count="0">0</b><span>Untested pushes</span></div>
+      <div class="stat"><b data-count="5000" data-suffix="/h">0</b><span>API budget respected</span></div>
+    </div>
+  </section>
+
+  <section data-shape="4" id="rules">
+    <span class="eyebrow">Guardrails</span>
+    <h2>Not another spam bot.</h2>
+    <div class="rules">
+      <div class="rule"><span class="chip" style="color:var(--green)">enforced</span><h3>Tests or nothing</h3><p>A red suite blocks the commit. Hallucinated APIs never leave the sandbox.</p></div>
+      <div class="rule"><span class="chip" style="color:var(--amber)">backoff</span><h3>Rate-limit aware</h3><p>Exponential backoff when the remaining quota drops under 10%.</p></div>
+      <div class="rule"><span class="chip" style="color:var(--rose)">opt-in</span><h3>Allowlists</h3><p>Repo allow and deny lists, dry-run mode and auto-merge caps live in config.</p></div>
+    </div>
+  </section>
+</main>
+<footer>Visual references: Linear · Raycast · Factory on styles.refero.design</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
+<script>
+(() => {
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const canvas = document.getElementById('gl');
+  let renderer;
+  try { renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true }); }
+  catch (e) { canvas.remove(); return; }
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 100);
+  camera.position.set(0, 0, 9);
+
+  const N = innerWidth < 700 ? 9000 : 22000;
+  // Five target shapes, each a Float32Array of xyz.
+  const shapes = [0,1,2,3,4].map(() => new Float32Array(N * 3));
+  const rnd = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    const r = Math.random(); rnd[i] = r; const t = i / N;
+    // 0 orbit sphere
+    const phi = Math.acos(1 - 2 * t), th = Math.PI * (1 + Math.sqrt(5)) * i;
+    const R = 3.2 + (Math.random() - .5) * .25;
+    shapes[0].set([R*Math.sin(phi)*Math.cos(th), R*Math.sin(phi)*Math.sin(th), R*Math.cos(phi)], i*3);
+    // 1 inbox stream: flowing ribbon
+    const u = t * Math.PI * 6;
+    shapes[1].set([(t-.5)*14, Math.sin(u)*1.2 + (r-.5)*.9, Math.cos(u*.5)*1.5 + (Math.random()-.5)*.6], i*3);
+    // 2 branch double helix
+    const strand = i % 2 ? Math.PI : 0, a = t * Math.PI * 10 + strand;
+    shapes[2].set([Math.cos(a)*1.6 + (r-.5)*.2, (t-.5)*10, Math.sin(a)*1.6 + (Math.random()-.5)*.2], i*3);
+    // 3 PR grid: commit cells
+    const cols = 60, cx = i % cols, cy = Math.floor(i / cols) % 40;
+    shapes[3].set([(cx/cols-.5)*11, (cy/40-.5)*7, (r-.5)*.3 + (Math.sin(cx*.4)*Math.cos(cy*.3))*.6], i*3);
+    // 4 merged core: torus knot
+    const k = t * Math.PI * 2 * 3, p = 2, q = 3, rr = 2 + Math.cos(q*k/3);
+    shapes[4].set([rr*Math.cos(p*k/3)*1.1 + (r-.5)*.35, rr*Math.sin(p*k/3)*1.1 + (Math.random()-.5)*.35, -Math.sin(q*k/3)*1.4], i*3);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(shapes[0].slice(), 3));
+  geo.setAttribute('aFrom', new THREE.BufferAttribute(shapes[0], 3));
+  geo.setAttribute('aTo', new THREE.BufferAttribute(shapes[1], 3));
+  geo.setAttribute('aRnd', new THREE.BufferAttribute(rnd, 1));
+
+  const uniforms = {
+    uTime: { value: 0 }, uMix: { value: 0 }, uMouse: { value: new THREE.Vector2() },
+    uPx: { value: renderer.getPixelRatio() },
+    uA: { value: new THREE.Color('#6366f1') }, uB: { value: new THREE.Color('#38bdf8') }, uC: { value: new THREE.Color('#10b981') }
+  };
+  const mat = new THREE.ShaderMaterial({
+    uniforms, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    vertexShader: `
+      attribute vec3 aFrom; attribute vec3 aTo; attribute float aRnd;
+      uniform float uTime, uMix, uPx; uniform vec2 uMouse;
+      varying float vR; varying float vDepth;
+      vec3 curl(vec3 p){ return vec3(sin(p.y*1.3+uTime*.6), sin(p.z*1.1+uTime*.5), sin(p.x*1.2+uTime*.7)); }
+      void main(){
+        float d = clamp((uMix - aRnd*.35)/.65, 0., 1.);
+        float e = d*d*(3.-2.*d);
+        vec3 p = mix(aFrom, aTo, e);
+        p += curl(p*.6 + aRnd*6.) * (.08 + sin(e*3.1416)*.9);
+        vec2 m = uMouse*vec2(6.,4.);
+        float md = length(p.xy - m);
+        p.xy += normalize(p.xy - m + 1e-4) * smoothstep(2.2, 0., md) * .7;
+        vec4 mv = modelViewMatrix * vec4(p,1.);
+        gl_Position = projectionMatrix * mv;
+        gl_PointSize = (1.4 + aRnd*2.6) * uPx * (9./-mv.z);
+        vR = aRnd; vDepth = clamp((-mv.z-5.)/8.,0.,1.);
+      }`,
+    fragmentShader: `
+      uniform vec3 uA, uB, uC; varying float vR; varying float vDepth;
+      void main(){
+        float d = length(gl_PointCoord-.5); if(d>.5) discard;
+        float a = smoothstep(.5,0.,d);
+        vec3 col = mix(mix(uA,uB,smoothstep(.0,.6,vR)), uC, smoothstep(.85,1.,vR));
+        gl_FragColor = vec4(col, a*(.85-vDepth*.6));
+      }`
+  });
+  const pts = new THREE.Points(geo, mat);
+  scene.add(pts);
+
+  function resize(){ const w = innerWidth, h = innerHeight; renderer.setSize(w, h, false); camera.aspect = w/h; camera.updateProjectionMatrix(); }
+  addEventListener('resize', resize); resize();
+  const mouse = new THREE.Vector2(9,9);
+  addEventListener('pointermove', e => mouse.set(e.clientX/innerWidth*2-1, -(e.clientY/innerHeight*2-1)));
+
+  // Scroll → morph between consecutive shapes.
+  let current = 0;
+  function setPair(from, to){
+    geo.attributes.aFrom.array = shapes[from]; geo.attributes.aFrom.needsUpdate = true;
+    geo.attributes.aTo.array = shapes[to]; geo.attributes.aTo.needsUpdate = true;
+  }
+  const state = { s: 0 };
+  gsap.registerPlugin(ScrollTrigger);
+  ScrollTrigger.create({
+    start: 0, end: 'max', scrub: reduce ? false : 1.2,
+    onUpdate: self => {
+      const s = self.progress * (shapes.length - 1);
+      gsap.to(state, { s, duration: reduce ? 0 : .8, ease: 'power2.out', overwrite: true });
+      document.getElementById('progress').style.transform = `scaleX(${self.progress})`;
+    }
+  });
+
+  // Section reveals start visible; only a gentle drift is added.
+  if (!reduce) document.querySelectorAll('section').forEach(sec => {
+    gsap.from(sec.children, { y: 40, opacity: .15, stagger: .08, duration: 1, ease: 'power3.out',
+      scrollTrigger: { trigger: sec, start: 'top 80%' } });
+  });
+  document.querySelectorAll('[data-count]').forEach(el => {
+    const end = +el.dataset.count, suf = el.dataset.suffix || '';
+    const o = { v: 0 };
+    ScrollTrigger.create({ trigger: el, start: 'top 85%', once: true, onEnter: () =>
+      gsap.to(o, { v: end, duration: reduce ? 0 : 1.6, ease: 'power2.out',
+        onUpdate: () => el.textContent = Math.round(o.v).toLocaleString() + suf }) });
+    el.textContent = '0' + suf;
+  });
+
+  const clock = new THREE.Clock();
+  (function tick(){
+    const t = clock.getElapsedTime();
+    const seg = Math.min(Math.floor(state.s), shapes.length - 2);
+    if (seg !== current) { current = seg; setPair(seg, seg + 1); }
+    uniforms.uMix.value = state.s - seg;
+    uniforms.uTime.value = reduce ? 0 : t;
+    uniforms.uMouse.value.lerp(mouse, .06);
+    pts.rotation.y = (reduce ? 0 : t*.05) + state.s * .9;
+    pts.rotation.x = Math.sin(state.s*1.3) * .25;
+    camera.position.z = 9 - Math.sin(state.s/4*Math.PI) * 1.5;
+    renderer.render(scene, camera);
+    requestAnimationFrame(tick);
+  })();
+})();
+</script>

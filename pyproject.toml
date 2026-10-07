@@ -28,7 +28,7 @@ where = ["."]
 include = ["src*"]
 
 [tool.setuptools.package-data]
-src = ["_frontend/index.html", "_frontend/css/*.css", "_frontend/dist/*.js", "_frontend/dist/components/*.js"]
+src = ["_frontend/*.html", "_frontend/css/*.css", "_frontend/js/*.js", "_frontend/img/*", "_frontend/dist/*.js", "_frontend/dist/components/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

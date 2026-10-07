@@ -34,3 +34,4 @@ htmlcov/
 # Node & Frontend
 node_modules/
 *.log
+docs/media/.chrome-profile/

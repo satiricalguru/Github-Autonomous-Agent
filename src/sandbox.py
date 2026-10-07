@@ -133,7 +133,8 @@ def detect_test_command(repository):
     if (repository / "go.mod").exists():
         return ["go", "test", "./..."]
     if any((repository / name).exists() for name in ("pyproject.toml", "pytest.ini", "setup.cfg", "setup.py")) or list(repository.rglob("test_*.py")):
-        return [sys.executable, "-m", "pytest", "-q", "--maxfail=1"]
+        # Repo addopts (coverage, xdist, …) need plugins the offline sandbox lacks; run the tests themselves.
+        return [sys.executable, "-m", "pytest", "-q", "--maxfail=1", "-o", "addopts="]
     return None
 
 

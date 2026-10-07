@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Mission Control · GitHub Agent</title>
+  <link rel="icon" type="image/svg+xml" href="/img/github-mark.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=Geist:wght@400;500&family=Geist+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/css/site.css">
+  <link rel="stylesheet" href="/css/dashboard.css">
+</head>
+<body>
+  <canvas id="gl" data-shapes="logo,grid,helix,ribbon,knot" aria-hidden="true"></canvas>
+  <div class="veil"></div>
+
+  <aside class="side" id="side">
+    <a class="brand" href="/" aria-label="GitHub Agent home">
+      <svg class="mark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+      <span><b>GitHub Agent</b><small>Mission control</small></span>
+    </a>
+    <nav class="nav" aria-label="Dashboard sections">
+      <a href="#overview" data-i="0"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Overview</a>
+      <a href="#workers" data-i="1"><svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>Workers<span class="count" id="n-workers">0</span></a>
+      <a href="#tasks" data-i="2"><svg viewBox="0 0 24 24"><path d="M9 11l3 3 9-9"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>Tasks<span class="count" id="n-tasks">0</span></a>
+      <a href="#activity" data-i="3"><svg viewBox="0 0 24 24"><path d="M4 17l6-6-6-6M12 19h8"/></svg>Activity<span class="count alert" id="n-errors" hidden>0</span></a>
+      <a href="#settings" data-i="4"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>Settings</a>
+    </nav>
+    <div class="side-foot">
+      <div class="agent-card">
+        <div class="agent-row"><i class="dot" id="statusDot"></i><b id="statusText">Connecting…</b></div>
+        <div class="agent-meta" id="agentMeta">—</div>
+      </div>
+      <a class="side-link" href="/">← Homepage</a>
+      <a class="side-link" href="/classic">Classic console</a>
+    </div>
+  </aside>
+
+  <div class="app">
+    <header class="bar">
+      <button class="btn icon menu" type="button" id="menuBtn" aria-label="Open navigation" aria-controls="side" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+      <div class="bar-title">
+        <span class="eyebrow" id="crumb">Overview</span>
+        <span class="bar-sub" id="barSub">Polling every 3s</span>
+      </div>
+      <div class="controls" id="controls">
+        <span class="chip" id="modeChip">—</span>
+        <button class="btn primary" type="button" data-act="pause-resume" id="btnPause">Pause</button>
+        <div class="split-btn">
+          <button class="btn" type="button" id="runBtn" aria-haspopup="menu" aria-expanded="false">Run now <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
+          <div class="menu-pop" id="runMenu" role="menu" hidden>
+            <button type="button" role="menuitem" data-act="trigger-inbox">Inbox pass</button>
+            <button type="button" role="menuitem" data-act="trigger-hunt">Hunt issues</button>
+            <button type="button" role="menuitem" data-act="trigger-solve">Solve queue</button>
+          </div>
+        </div>
+        <button class="btn danger" type="button" data-act="stop">Stop</button>
+      </div>
+    </header>
+
+    <div class="banner" id="confirm" role="alertdialog" aria-labelledby="confirmText" hidden>
+      <span id="confirmText"></span>
+      <span class="banner-actions"><button class="btn danger" type="button" id="confirmYes">Confirm</button><button class="btn" type="button" id="confirmNo">Cancel</button></span>
+    </div>
+    <div class="banner err" id="error" hidden></div>
+
+    <main>
+      <section id="overview" data-i="0">
+        <div class="hello">
+          <h1>Mission <span class="grad">control</span>.</h1>
+          <p class="lede" id="lede">Waiting for the first status poll.</p>
+        </div>
+        <div class="kpis">
+          <div class="kpi"><span>Tasks completed</span><b id="k-done">0</b><em id="k-done-sub">—</em></div>
+          <div class="kpi"><span>Inbox handled</span><b id="k-inbox">0</b><em id="k-inbox-sub">—</em></div>
+          <div class="kpi"><span>PRs opened</span><b id="k-prs">0</b><em id="k-prs-sub">—</em></div>
+          <div class="kpi"><span>Failed</span><b id="k-fail">0</b><em id="k-fail-sub">—</em></div>
+        </div>
+        <div class="grid-2">
+          <div class="panel">
+            <div class="panel-head"><h3>Activity, last 24 hours</h3><span class="legend"><i class="lg-ok"></i>completed <i class="lg-bad"></i>failed <i class="lg-other"></i>other</span></div>
+            <div class="chart" id="chart" role="img" aria-label="Tasks per hour over the last 24 hours"></div>
+          </div>
+          <div class="panel stack">
+            <div class="gauge">
+              <div class="gauge-head"><span>GitHub API budget</span><b id="rl-text">—</b></div>
+              <div class="bar-track"><i id="rl-bar"></i></div>
+            </div>
+            <div class="gauge">
+              <div class="gauge-head"><span>AI engine</span><b id="ai-state">—</b></div>
+              <div class="mono-line" id="ai-model">—</div>
+            </div>
+            <div class="gauge">
+              <div class="gauge-head"><span>Uptime</span><b id="k-uptime">—</b></div>
+              <div class="mono-line" id="k-iter">—</div>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>By category</h3><span class="muted" id="cat-total">—</span></div>
+          <div class="cats" id="cats"></div>
+        </div>
+      </section>
+
+      <section id="workers" data-i="1">
+        <div class="sec-head"><span class="eyebrow">Worker fleet</span><h2>Three loops, one queue.</h2></div>
+        <div class="workers" id="workerList"></div>
+      </section>
+
+      <section id="tasks" data-i="2">
+        <div class="sec-head"><span class="eyebrow">Tasks &amp; PRs</span><h2>What it touched.</h2></div>
+        <div class="toolbar">
+          <div class="filters" id="filters" role="group" aria-label="Filter by status">
+            <button class="filter active" data-f="all" type="button">All <span id="f-all">0</span></button>
+            <button class="filter" data-f="running" type="button">Running <span id="f-running">0</span></button>
+            <button class="filter" data-f="completed" type="button">Completed <span id="f-completed">0</span></button>
+            <button class="filter" data-f="failed" type="button">Failed <span id="f-failed">0</span></button>
+          </div>
+          <label class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+            <input id="taskSearch" type="search" placeholder="Search title, repo or outcome" autocomplete="off" aria-label="Search tasks"></label>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Status</th><th>Task</th><th>Repository</th><th>When</th><th>Outcome</th></tr></thead>
+            <tbody id="taskRows"><tr><td colspan="5" class="empty">Waiting for the first status poll.</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="activity" data-i="3">
+        <div class="sec-head"><span class="eyebrow">Live terminal</span><h2>Event stream.</h2></div>
+        <div class="toolbar">
+          <div class="filters" id="logFilters" role="group" aria-label="Filter log level">
+            <button class="filter active" data-l="all" type="button">All</button>
+            <button class="filter" data-l="error" type="button">Errors</button>
+          </div>
+          <label class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+            <input id="logSearch" type="search" placeholder="Filter events" autocomplete="off" aria-label="Filter events"></label>
+          <label class="toggle"><input type="checkbox" id="follow" checked> Follow</label>
+        </div>
+        <div class="term" id="logs" role="log" aria-live="polite"><span class="k">Waiting for events…</span></div>
+      </section>
+
+      <section id="settings" data-i="4">
+        <div class="sec-head"><span class="eyebrow">Settings</span><h2>Set the limits.</h2></div>
+        <form class="panel settings" id="settingsForm" novalidate>
+          <fieldset class="mode-field">
+            <legend>Mode</legend>
+            <label class="radio"><input type="radio" name="mode" value="dry" id="mode-dry"><span><b>Dry run</b><small>Drafts replies and PRs only. Nothing is posted.</small></span></label>
+            <label class="radio"><input type="radio" name="mode" value="live" id="mode-live"><span><b>Live</b><small>Posts replies and opens real pull requests.</small></span></label>
+          </fieldset>
+          <label class="field"><span>AI model</span><select id="set-model"></select></label>
+          <label class="field"><span>Max concurrent tasks</span><input id="set-concurrency" type="number" min="1" max="10" step="1"><small>1–10</small></label>
+          <label class="field"><span>Inbox poll interval</span><input id="set-inbox" type="number" min="5" max="3600" step="5"><small>Seconds, 5–3600</small></label>
+          <label class="field"><span>Issue hunt interval</span><input id="set-hunt" type="number" min="5" max="7200" step="5"><small>Seconds, 5–7200</small></label>
+          <div class="readonly" id="readonly"></div>
+          <div class="form-foot">
+            <span class="form-msg" id="formMsg" role="status"></span>
+            <button class="btn" type="button" id="resetBtn">Reset</button>
+            <button class="btn primary" type="submit" id="saveBtn">Save settings</button>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <aside class="drawer" id="drawer" aria-labelledby="d-title" hidden>
+    <div class="drawer-head">
+      <span class="chip" id="d-status">—</span>
+      <button class="btn icon" type="button" id="drawerClose" aria-label="Close details"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <h3 id="d-title">—</h3>
+    <div class="drawer-body" id="d-body"></div>
+  </aside>
+  <div class="scrim" id="scrim" hidden></div>
+  <div class="toast" id="toast" role="status" hidden></div>
+
+  <script src="/js/field.js"></script>
+  <script src="/js/dashboard.js"></script>
+</body>
+</html>
