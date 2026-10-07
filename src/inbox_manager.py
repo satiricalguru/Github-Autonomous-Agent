@@ -18,6 +18,8 @@ class InboxManager:
         self.status = status if status is not None else status_tracker
         self.tasks = tasks if tasks is not None else task_tracker
         self._dry_run_handled = set()
+        # Notifications the agent cannot act on (CI runs, releases, commits) are logged once per update, not every poll.
+        self._skipped = set()
 
     async def process_inbox(self):
         self.status.update_inbox("POLLING", "Fetching GitHub notifications")
@@ -36,12 +38,22 @@ class InboxManager:
             if repository.count("/") != 1:
                 continue
             owner, repo = repository.split("/")
-            title, kind, url = subject.get("title", "Untitled"), subject.get("type", "Unknown"), subject.get("url", "")
+            title, kind, url = subject.get("title") or "Untitled", subject.get("type") or "Unknown", subject.get("url") or ""
+            supported = re.fullmatch(r"https://api\.github\.com/repos/([^/]+)/([^/]+)/(issues|pulls|discussions)/(\d+)", url) if url else None
+            if not supported or supported.group(1, 2) != (owner, repo):
+                key = (thread, notification.get("updated_at"))
+                if key not in self._skipped:
+                    self._skipped.add(key)
+                    task = self.tasks.create_task("INBOX", title, repository, url,
+                        {"thread_id": thread, "dry_run": self.config.dry_run, "subject_type": kind})
+                    self.tasks.complete_task(task, "SKIPPED", f"{kind} notifications need manual review; left unread in your inbox")
+                    self.status.log_event("INBOX", f"Skipped {kind}: {repository} — {title}")
+                continue
             task = self.tasks.create_task("INBOX", title, repository, url,
                 {"thread_id": thread, "dry_run": self.config.dry_run, "subject_type": kind})
             try:
                 self.status.update_inbox("TRIAGING", f"Evaluating {repository}: {title}")
-                match = re.fullmatch(r"https://api\.github\.com/repos/([^/]+)/([^/]+)/(issues|pulls|discussions)/(\d+)", url)
+                match = re.fullmatch(r"https://api\.github\.com/repos/([^/]+)/([^/]+)/(issues|pulls|discussions)/(\d+)", url) if url else None
                 comments, node = [], None
                 if not match or match.group(1, 2) != (owner, repo):
                     raise RuntimeError("Unsupported notification resource; requires manual review")
@@ -94,6 +106,8 @@ class InboxManager:
                 message = str(error) if isinstance(error, (ValueError, RuntimeError)) else f"Inbox operation failed ({type(error).__name__})"
                 self.tasks.complete_task(task, "FAILED", message)
                 self.status.log_event("ERROR", message)
+                if self.config.dry_run:
+                    self._dry_run_handled.add(thread)
         self.status.update_inbox("IDLE", f"Handled {len(results)} notifications; unresolved threads preserved", handled_count=len(results))
         return results
 

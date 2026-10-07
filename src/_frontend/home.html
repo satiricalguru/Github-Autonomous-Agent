@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>GitHub Agent</title>
+  <meta name="description" content="An autonomous agent that keeps your GitHub inbox at zero and ships tested fixes to open-source bugs.">
+  <link rel="icon" type="image/svg+xml" href="/img/github-mark.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,800&family=Geist:wght@400;500&family=Geist+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/css/site.css">
+  <link rel="stylesheet" href="/css/home.css">
+</head>
+<body>
+  <canvas id="gl" data-shapes="logo,ribbon,helix,grid,knot" aria-hidden="true"></canvas>
+  <div class="veil"></div>
+  <div class="progress" id="progress"></div>
+
+  <header class="top">
+    <a class="brand" href="/" aria-label="GitHub Agent home">
+      <svg class="mark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+      <span><b>GitHub Agent</b><small>Autonomous ops</small></span>
+    </a>
+    <nav class="links" aria-label="Sections">
+      <a href="#how">How it works</a>
+      <a href="#guardrails">Guardrails</a>
+      <a href="#live">Live stats</a>
+      <a href="/dashboard" class="tab-dash">Dashboard</a>
+    </nav>
+    <a class="btn primary" href="/dashboard">Open dashboard
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+    </a>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="hero-copy">
+        <span class="status-pill" id="pill"><i class="dot" id="pillDot"></i><span id="pillText">Checking agent…</span></span>
+        <h1>Your GitHub, on <span class="grad">autopilot</span>.</h1>
+        <p class="lede">It keeps your notifications at inbox zero, then hunts unassigned bugs in high-star repos, reproduces them, writes a minimal fix and opens a pull request only after the local test suite passes.</p>
+        <div class="cta">
+          <a class="btn primary lg" href="/dashboard">Open mission control</a>
+          <a class="btn lg" href="#how">See the loop</a>
+        </div>
+        <ul class="facts">
+          <li><b>Inbox</b> triage, reply drafts, mark read</li>
+          <li><b>Hunt</b> good first issue · help wanted · bug</li>
+          <li><b>Ship</b> fork, fix, test, PR</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="how" class="step">
+      <div class="step-copy">
+        <span class="eyebrow">01 · Triage</span>
+        <h2>Inbox zero, by default.</h2>
+        <p class="lede">Review requests, mentions and discussions are scored for whether they need you. Replies are drafted with a confidence score and rationale, and dry-run mode keeps every draft a draft.</p>
+      </div>
+      <figure class="term" aria-label="Example inbox pass">
+<span class="k">$</span> agent inbox --poll
+<span class="c">●</span> review_requested  <span class="k">owner/repo#1204</span>
+<span class="c">●</span> discussion        <span class="k">owner/repo#5719</span>
+<span class="k">○</span> check_suite       needs manual review
+<span class="g">✓</span> should_respond=false · confidence 0.90
+<span class="g">✓</span> 7 threads marked read</figure>
+    </section>
+
+    <section class="step flip">
+      <div class="step-copy">
+        <span class="eyebrow">02 · Branch &amp; fix</span>
+        <h2>Reproduce first. Patch second.</h2>
+        <p class="lede">It skips issues that already have an assignee or an open PR. The bug is reproduced with a failing test in an isolated sandbox before a single line of the fix is written.</p>
+      </div>
+      <figure class="term" aria-label="Example fix pass">
+<span class="k">$</span> agent hunt --label "good first issue"
+<span class="p">⎇</span> fork  owner/repo → fix/validator-alias
+<span class="a">▲</span> repro  test_alias_generator … FAILED
+<span class="k">  patch: 1 file, +6 −2</span>
+<span class="g">✓</span> pytest  1,842 passed
+<span class="g">✓</span> PR opened · CONTRIBUTING.md followed</figure>
+    </section>
+
+    <section class="step">
+      <div class="step-copy">
+        <span class="eyebrow">03 · Watch</span>
+        <h2>Every move, on one screen.</h2>
+        <p class="lede">Mission control shows each worker, every task with its outcome and diff, the live event stream and your GitHub API budget. Pause, trigger a pass or switch modes from the same place.</p>
+        <div class="cta"><a class="btn primary" href="/dashboard">Open the dashboard</a></div>
+      </div>
+      <figure class="mini" aria-label="Dashboard preview">
+        <div class="mini-bar"><i></i><i></i><i></i><span>localhost · /dashboard</span></div>
+        <div class="mini-body">
+          <div class="mini-side"><span class="on"></span><span></span><span></span><span></span><span></span></div>
+          <div class="mini-main">
+            <div class="mini-kpis"><span></span><span></span><span></span><span></span></div>
+            <div class="mini-chart"><svg viewBox="0 0 200 50" preserveAspectRatio="none" aria-hidden="true"><path d="M0 40 L20 34 L40 37 L60 22 L80 26 L100 14 L120 20 L140 9 L160 15 L180 6 L200 10 L200 50 L0 50Z" fill="rgba(99,102,241,.25)"/><path d="M0 40 L20 34 L40 37 L60 22 L80 26 L100 14 L120 20 L140 9 L160 15 L180 6 L200 10" fill="none" stroke="#38bdf8" stroke-width="1.5"/></svg></div>
+            <div class="mini-rows"><span></span><span></span><span></span></div>
+          </div>
+        </div>
+      </figure>
+    </section>
+
+    <section id="guardrails" class="block">
+      <span class="eyebrow">Guardrails</span>
+      <h2>Not another spam bot.</h2>
+      <div class="rules">
+        <article class="rule"><span class="chip s-running">enforced</span><h3>Tests or nothing</h3><p>A red suite blocks the commit. Untested code never leaves the sandbox.</p></article>
+        <article class="rule"><span class="chip s-pending">backoff</span><h3>Rate-limit aware</h3><p>Exponential backoff when the remaining GitHub quota runs low.</p></article>
+        <article class="rule"><span class="chip s-error">opt-in</span><h3>You set the limits</h3><p>Dry-run mode, repo allow and deny lists, daily PR caps and concurrency live in settings.</p></article>
+        <article class="rule"><span class="chip s-completed">etiquette</span><h3>No duplicate work</h3><p>Assigned issues and issues with open PRs are skipped. CONTRIBUTING.md and PR templates are followed.</p></article>
+      </div>
+    </section>
+
+    <section id="live" class="block">
+      <span class="eyebrow">Live from this agent</span>
+      <h2>Running numbers.</h2>
+      <div class="stats">
+        <div class="stat"><b id="s-tasks">—</b><span>Tasks completed</span></div>
+        <div class="stat"><b id="s-inbox">—</b><span>Inbox handled</span></div>
+        <div class="stat"><b id="s-prs">—</b><span>PRs opened</span></div>
+        <div class="stat"><b id="s-api">—</b><span>API calls left</span></div>
+      </div>
+      <p class="note" id="liveNote">Read from this machine's agent at <code>/api/status</code>.</p>
+    </section>
+
+    <section class="final">
+      <svg class="mark big" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+      <h2>Let it run tonight.</h2>
+      <div class="cta"><a class="btn primary lg" href="/dashboard">Open mission control</a></div>
+    </section>
+  </main>
+
+  <footer>
+    <span>GitHub Agent · runs locally on 127.0.0.1</span>
+    <span>Not affiliated with GitHub, Inc.</span>
+  </footer>
+
+  <script src="/js/field.js"></script>
+  <script src="/js/home.js"></script>
+</body>
+</html>

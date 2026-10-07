@@ -257,6 +257,11 @@ class PRSolver:
             message = str(error) if isinstance(error, (ValueError, RuntimeError)) else f"Repair failed ({type(error).__name__})"
             self.tasks.complete_task(task_id, "FAILED", message)
             self.status.log_event("ERROR", message)
+            # Lasting rejections (broken baseline, CLA, no confident fix) are not retried every hunt cycle;
+            # transient ones (quota, auth, network, AI provider outage) are.
+            transient = re.search(r"rate|quota|authenticat|timeout|timed out|network|Antigravity|provider|HTTP 5\d\d|push|fork|PR creation|clone", message, re.IGNORECASE)
+            if not self.config.dry_run and not transient and isinstance(error, (ValueError, RuntimeError)):
+                self.safety.state.mark_issue_handled(issue_url)
             return None
         finally:
             if claimed:

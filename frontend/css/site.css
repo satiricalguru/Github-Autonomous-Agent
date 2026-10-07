@@ -1,0 +1,51 @@
+/* Shared base for the homepage and dashboard.
+   Colors from tokens.css (Cyber-Obsidian); type and restraint after Linear / Raycast / Factory on Refero. */
+:root {
+  color-scheme: dark;
+  --bg: #06080d; --bg-2: #0a0d14; --surface: rgba(13, 17, 24, 0.72); --surface-solid: rgba(8, 10, 16, 0.92); --line: rgba(255, 255, 255, 0.08); --line-2: rgba(255, 255, 255, 0.14);
+  --fg: #f0f6fc; --muted: #8b949e; --dim: #6e7681;
+  --indigo: #6366f1; --cyan: #38bdf8; --green: #10b981; --amber: #f59e0b; --rose: #f43f5e; --purple: #a855f7;
+  --display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+  --body: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --radius: 12px;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { background: var(--bg); color: var(--fg); margin: 0; }
+body { font: 16px/1.6 var(--body); -webkit-font-smoothing: antialiased; }
+code { font-family: var(--mono); font-size: .9em; color: var(--cyan); }
+a { color: inherit; }
+:focus-visible { outline: 2px solid var(--indigo); outline-offset: 2px; }
+#gl { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; display: block; }
+
+.mark { width: 28px; height: 28px; flex: none; color: var(--fg); }
+.brand { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--fg); }
+.brand b { font: 800 17px/1.1 var(--display); letter-spacing: -.01em; display: block; }
+.brand small { font: 500 10px var(--mono); color: var(--muted); letter-spacing: .14em; text-transform: uppercase; }
+
+.eyebrow { font: 500 12px var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--cyan); }
+h1, h2, h3 { font-family: var(--display); font-weight: 800; letter-spacing: -.03em; text-wrap: balance; margin: 0; line-height: .95; }
+.grad { background: linear-gradient(100deg, var(--indigo), var(--cyan) 60%, var(--green)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+
+.btn { display: inline-flex; align-items: center; gap: 8px; font: 500 13px var(--mono); padding: 9px 14px; border-radius: 8px; border: 1px solid var(--line-2); color: var(--fg); background: var(--surface); backdrop-filter: blur(16px); text-decoration: none; cursor: pointer; transition: border-color .2s, background .2s, transform .2s; white-space: nowrap; }
+.btn:hover { border-color: var(--indigo); }
+.btn.primary { background: var(--indigo); border-color: var(--indigo); }
+.btn.primary:hover { background: #7376f4; }
+.btn.lg { font-size: 14px; padding: 13px 20px; }
+.btn.warn { color: var(--amber); } .btn.warn:hover { border-color: var(--amber); }
+.btn.danger { color: var(--rose); } .btn.danger:hover { border-color: var(--rose); }
+.btn:disabled { opacity: .45; cursor: progress; }
+.btn svg { width: 16px; height: 16px; }
+
+.chip { display: inline-flex; gap: 6px; align-items: center; font: 500 11px var(--mono); padding: 3px 9px; border-radius: 99px; border: 1px solid currentColor; white-space: nowrap; color: var(--muted); justify-self: start; }
+.chip.live { color: var(--green); } .chip.dry { color: var(--amber); }
+.dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--dim); }
+.dot.ok { background: var(--green); box-shadow: 0 0 12px var(--green); animation: pulse 2s infinite; }
+.dot.warn { background: var(--amber); box-shadow: 0 0 12px var(--amber); }
+.dot.bad { background: var(--rose); box-shadow: 0 0 12px var(--rose); }
+@keyframes pulse { 50% { opacity: .35; } }
+.s-running { color: var(--green); } .s-idle { color: var(--indigo); } .s-error, .s-failed, .s-rejected { color: var(--rose); }
+.s-stopped, .s-cancelled, .s-skipped { color: var(--dim); } .s-completed { color: var(--cyan); } .s-pending { color: var(--amber); }
+
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }

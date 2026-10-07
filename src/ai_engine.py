@@ -65,6 +65,9 @@ def sanitize_model_name(model: str, fallback: str = "gemini-3.8-flash") -> str:
     return fallback
 
 
+_ANTIGRAVITY_SLOTS = asyncio.Semaphore(int(os.getenv("ANTIGRAVITY_MAX_PARALLEL", "2")))
+
+
 class AIEngine:
     """Provides LLM-powered reasoning for GitHub Agent workflows."""
 
@@ -129,17 +132,29 @@ class AIEngine:
                     raise ValueError("Antigravity CLI is not installed")
                 # No edit permissions, no expanded slash commands, no workspace secrets.
                 text = system_instruction + "\nReturn only the requested JSON. Do not use tools or read files.\n" + prompt
-                with tempfile.TemporaryDirectory(prefix="github-agent-inference-") as directory:
-                    res = await run_process([executable, "--print", text, "--model", model,
-                        "--mode", "plan", "--sandbox", "--disable-slash-commands",
-                        "--output-format", "json", "--print-timeout", f"{self.config.provider_timeout}s"],
-                        cwd=Path(directory), timeout=self.config.provider_timeout + 5,
-                        env={k:v for k,v in os.environ.items() if k not in ("GITHUB_TOKEN", "GH_TOKEN", "GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY")})
-                if res.returncode:
-                    raise ValueError("Antigravity request failed; check authentication, model availability, and quota")
-                data = json.loads(res.stdout)
-                if data.get("status") != "SUCCESS":
-                    raise ValueError("Antigravity did not complete the request")
+                env = {k: v for k, v in os.environ.items() if k not in ("GITHUB_TOKEN", "GH_TOKEN", "GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY")}
+                problem = "Antigravity did not complete the request"
+                data = None
+                for attempt in range(2):
+                    if attempt:
+                        await asyncio.sleep(3)
+                    async with _ANTIGRAVITY_SLOTS:
+                        with tempfile.TemporaryDirectory(prefix="github-agent-inference-") as directory:
+                            res = await run_process([executable, "--print", text, "--model", model,
+                                "--sandbox", "--disable-slash-commands",
+                                "--output-format", "json", "--print-timeout", f"{self.config.provider_timeout}s"],
+                                cwd=Path(directory), timeout=self.config.provider_timeout + 5, env=env)
+                    try:
+                        data = json.loads(res.stdout)
+                    except (TypeError, ValueError):
+                        data = None
+                    if res.returncode == 0 and data and data.get("status") == "SUCCESS":
+                        break
+                    detail = (data or {}).get("error") or (data or {}).get("status") or f"exit {res.returncode}"
+                    problem = f"Antigravity request failed ({str(detail)[:160]}); check authentication, model availability and quota"
+                    data = None
+                if data is None:
+                    raise ValueError(problem)
                 result = json.dumps(data["structured_output"]) if isinstance(data.get("structured_output"), dict) else data.get("response", "")
             else:
                 if provider == "gemini":

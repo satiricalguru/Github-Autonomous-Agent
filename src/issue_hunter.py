@@ -21,10 +21,18 @@ class IssueHunter:
         limit = max(1, min(int(limit), 50))
         candidates, seen, repositories = [], set(), {}
         for language in self.config.target_languages:
+            rate_limited = False
             for label in self.config.target_labels:
                 query = f'is:issue state:open no:assignee language:{language} label:"{label}"'
                 self.status.update_hunter("HUNTING", f"Searching {language} issues", current_query=query)
-                items = await self.client.search_issues(query, per_page=30)
+                try:
+                    items = await self.client.search_issues(query, per_page=30)
+                except Exception as err:
+                    logger.warning(f"Issue search failed for query '{query}': {err}")
+                    if "403" in str(err) or "rate" in str(err).lower():
+                        rate_limited = True
+                        break
+                    continue
                 for item in items:
                     url = item.get("html_url", "")
                     if url in seen or not url or item.get("pull_request") or item.get("locked") or item.get("assignees") or item.get("assignee"):
@@ -63,5 +71,7 @@ class IssueHunter:
                     if len(candidates) >= limit:
                         self.status.update_hunter("IDLE", f"Found {len(candidates)} eligible issues")
                         return sorted(candidates, key=lambda v: v["score"], reverse=True)
+            if rate_limited:
+                break
         self.status.update_hunter("IDLE", f"Found {len(candidates)} eligible issues")
         return sorted(candidates, key=lambda v: v["score"], reverse=True)

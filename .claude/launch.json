@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "dashboard", "runtimeExecutable": "./run.sh", "runtimeArgs": ["web", "--port", "3017"], "port": 3017 }
+  ]
+}
